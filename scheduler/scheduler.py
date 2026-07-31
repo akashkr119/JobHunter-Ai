@@ -2,15 +2,18 @@
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-
-class JobScheduler:
-    """Run periodic background jobs."""
+class Scheduler:
+    """Simple scheduler wrapper expected by tests."""
 
     def __init__(self):
-        self.scheduler = BlockingScheduler()
+        self._scheduler = BlockingScheduler()
 
     def add_job(self, func, hours: int = 1):
-        self.scheduler.add_job(func, trigger="interval", hours=hours)
+        self._scheduler.add_job(func, trigger="interval", hours=hours)
 
     def start(self):
-        self.scheduler.start()
+        self._scheduler.start()
+
+class JobScheduler(Scheduler):
+    """Backward-compatible alias."""
+    pass
