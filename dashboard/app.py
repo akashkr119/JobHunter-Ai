@@ -13,10 +13,10 @@ def _database_path() -> str:
     return os.getenv("JOBHUNTER_DATABASE_PATH", "jobs.db")
 
 
-def _list_jobs(min_score: float = 0.0, limit: int = 100) -> list[dict]:
+def _list_jobs(min_score: float = 0.0, limit: int = 100, status: str | None = None) -> list[dict]:
     db = Database(_database_path())
     try:
-        return db.list_jobs(min_score=min_score, limit=limit)
+        return db.list_jobs(min_score=min_score, limit=limit, status=status)
     finally:
         db.close()
 
@@ -30,6 +30,8 @@ def _job_summary(job: dict) -> dict:
         "preferred_skills": job["preferred_skills"],
         "matched_required_skills": job["matched_required_skills"],
         "missing_required_skills": job["missing_required_skills"],
+        "application_status": job["application_status"],
+        "status_updated_at": job["status_updated_at"],
         "apply_url": job["apply_url"], "discovered_at": job["discovered_at"],
         "updated_at": job["updated_at"],
     }
@@ -37,7 +39,6 @@ def _job_summary(job: dict) -> dict:
 
 @app.get("/")
 def home():
-    """Render the interactive recommendation dashboard."""
     return render_template("index.html")
 
 
@@ -57,7 +58,11 @@ def jobs():
         return jsonify({"error": "min_score must be between 0 and 100"}), 400
     if not 1 <= limit <= 500:
         return jsonify({"error": "limit must be between 1 and 500"}), 400
-    recommendations = [_job_summary(job) for job in _list_jobs(min_score, limit)]
+    status = request.args.get("status") or None
+    try:
+        recommendations = [_job_summary(job) for job in _list_jobs(min_score, limit, status)]
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "allowed_statuses": Database.APPLICATION_STATUSES}), 400
     return jsonify({"count": len(recommendations), "jobs": recommendations})
 
 
@@ -71,6 +76,26 @@ def job_detail(job_id: int):
     if job is None:
         return jsonify({"error": "Job not found"}), 404
     return jsonify(job)
+
+
+@app.patch("/api/jobs/<int:job_id>/status")
+def update_job_status(job_id: int):
+    """Update application progress for a saved job."""
+    payload = request.get_json(silent=True) or {}
+    status = payload.get("status")
+    if not status:
+        return jsonify({"error": "status is required", "allowed_statuses": Database.APPLICATION_STATUSES}), 400
+    db = Database(_database_path())
+    try:
+        try:
+            job = db.update_application_status(job_id, status)
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "allowed_statuses": Database.APPLICATION_STATUSES}), 400
+        except KeyError:
+            return jsonify({"error": "Job not found"}), 404
+    finally:
+        db.close()
+    return jsonify(_job_summary(job))
 
 
 if __name__ == "__main__":
