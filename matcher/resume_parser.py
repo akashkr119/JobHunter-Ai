@@ -8,53 +8,18 @@ class ResumeParser:
     """Extract resume text and identify common technical skills."""
 
     DEFAULT_SKILLS = (
-        "python",
-        "java",
-        "javascript",
-        "typescript",
-        "c++",
-        "c#",
-        "sql",
-        "html",
-        "css",
-        "selenium",
-        "pytest",
-        "playwright",
-        "robot framework",
-        "appium",
-        "jira",
-        "git",
-        "github",
-        "jenkins",
-        "docker",
-        "kubernetes",
-        "aws",
-        "azure",
-        "gcp",
-        "flask",
-        "django",
-        "fastapi",
-        "pandas",
-        "numpy",
-        "rest api",
-        "api testing",
-        "automation testing",
-        "manual testing",
-        "can",
-        "canoe",
-        "canalyzer",
-        "capl",
-        "uds",
-        "automotive",
+        "python", "java", "javascript", "typescript", "c++", "c#", "sql",
+        "html", "css", "selenium", "pytest", "playwright", "robot framework",
+        "appium", "jira", "git", "github", "jenkins", "docker", "kubernetes",
+        "aws", "azure", "gcp", "flask", "django", "fastapi", "pandas", "numpy",
+        "rest api", "api testing", "automation testing", "manual testing", "can",
+        "canoe", "canalyzer", "capl", "uds", "automotive",
     )
 
-    def extract_text(self, resume_path: str | Path) -> str:
-        """Read a plain-text resume from disk.
+    SUPPORTED_FORMATS = {".txt", ".md", ".pdf", ".docx"}
 
-        PDF and DOCX extraction will be added through dedicated parsers; this
-        method intentionally rejects binary formats instead of returning
-        corrupted text.
-        """
+    def extract_text(self, resume_path: str | Path) -> str:
+        """Extract text from TXT, Markdown, PDF or DOCX resumes."""
         path = Path(resume_path)
         if not path.exists():
             raise FileNotFoundError(f"Resume file not found: {path}")
@@ -62,13 +27,50 @@ class ResumeParser:
             raise ValueError(f"Resume path is not a file: {path}")
 
         suffix = path.suffix.lower()
-        if suffix not in {".txt", ".md"}:
+        if suffix not in self.SUPPORTED_FORMATS:
+            supported = ", ".join(sorted(self.SUPPORTED_FORMATS))
             raise ValueError(
                 f"Unsupported resume format: {suffix or 'unknown'}. "
-                "Currently supported: .txt, .md"
+                f"Currently supported: {supported}"
             )
 
-        return path.read_text(encoding="utf-8", errors="ignore").strip()
+        if suffix in {".txt", ".md"}:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        elif suffix == ".pdf":
+            text = self._extract_pdf(path)
+        else:
+            text = self._extract_docx(path)
+
+        return self._clean_text(text)
+
+    @staticmethod
+    def _extract_pdf(path: Path) -> str:
+        """Extract text from a text-based PDF resume."""
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise RuntimeError("PDF parsing requires the pypdf package") from exc
+
+        reader = PdfReader(str(path))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+        return "\n".join(pages)
+
+    @staticmethod
+    def _extract_docx(path: Path) -> str:
+        """Extract paragraphs and table text from a DOCX resume."""
+        try:
+            from docx import Document
+        except ImportError as exc:
+            raise RuntimeError("DOCX parsing requires the python-docx package") from exc
+
+        document = Document(str(path))
+        parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text]
+        for table in document.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text:
+                        parts.append(cell.text)
+        return "\n".join(parts)
 
     def extract_skills(
         self,
@@ -84,7 +86,6 @@ class ResumeParser:
             normalized_skill = self._normalize(str(skill))
             if not normalized_skill:
                 continue
-
             pattern = rf"(?<![a-z0-9]){re.escape(normalized_skill)}(?![a-z0-9])"
             if re.search(pattern, normalized_text) and normalized_skill not in found:
                 found.append(normalized_skill)
@@ -93,12 +94,19 @@ class ResumeParser:
 
     def parse(self, resume_path: str | Path) -> dict:
         """Parse a resume into normalized text and detected skills."""
-        text = self.extract_text(resume_path)
+        path = Path(resume_path)
+        text = self.extract_text(path)
         return {
-            "path": str(Path(resume_path)),
+            "path": str(path),
+            "format": path.suffix.lower().lstrip("."),
             "text": text,
             "skills": self.extract_skills(text),
         }
+
+    @staticmethod
+    def _clean_text(value: str) -> str:
+        lines = [re.sub(r"\s+", " ", line).strip() for line in str(value or "").splitlines()]
+        return "\n".join(line for line in lines if line).strip()
 
     @staticmethod
     def _normalize(value: str) -> str:
