@@ -3,6 +3,9 @@
 import argparse
 
 from config.settings import Settings
+from crawler.career_finder import CareerFinder
+from crawler.company_loader import CompanyLoader
+from crawler.website_finder import WebsiteFinder
 from database.db import Database
 from matcher.resume_parser import ResumeParser
 from matcher.skill_matcher import SkillMatcher
@@ -22,7 +25,6 @@ def build_scheduler(settings: Settings) -> Scheduler:
             smtp_sender=settings.smtp_sender,
             telegram_bot_token=settings.telegram_bot_token,
         )
-
     return Scheduler(
         matcher=SkillMatcher(),
         database=Database(settings.database_path),
@@ -32,8 +34,39 @@ def build_scheduler(settings: Settings) -> Scheduler:
 
 def load_resume_skills(settings: Settings) -> list[str]:
     """Parse the configured resume and return detected skills."""
-    parsed = ResumeParser().parse(settings.resume_path)
-    return parsed["skills"]
+    return ResumeParser().parse(settings.resume_path)["skills"]
+
+
+def load_career_urls(excel_path: str) -> list[str]:
+    """Resolve career URLs from structured company Excel input.
+
+    Explicit career URLs are preferred. When only a website is supplied,
+    deterministic common career-page candidates are generated. A company name
+    without either URL is not guessed into a scraper URL because WebsiteFinder
+    currently returns a search-engine discovery URL in that case.
+    """
+    targets = CompanyLoader().load_targets(excel_path)
+    career_finder = CareerFinder()
+    website_finder = WebsiteFinder()
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    for target in targets:
+        career_url = target.get("career_url")
+        if career_url:
+            candidates = [website_finder.normalize_url(career_url)]
+        elif target.get("website"):
+            website = website_finder.find(target["company"], target["website"])
+            candidates = career_finder.find(website)
+        else:
+            continue
+
+        for url in candidates:
+            if url not in seen:
+                seen.add(url)
+                urls.append(url)
+
+    return urls
 
 
 def run_once(career_urls: list[str], settings: Settings) -> dict:
@@ -71,8 +104,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="JobHunter AI job discovery pipeline")
     parser.add_argument(
         "career_urls",
-        nargs="+",
+        nargs="*",
         help="Company career/ATS URLs to scan",
+    )
+    parser.add_argument(
+        "--companies",
+        help="Excel file containing Company, Website and/or Career URL columns",
     )
     parser.add_argument(
         "--scheduled",
@@ -90,12 +127,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     settings = Settings.from_env(args.env_file)
+    career_urls = list(args.career_urls)
+    if args.companies:
+        career_urls.extend(load_career_urls(args.companies))
+    career_urls = list(dict.fromkeys(career_urls))
+    if not career_urls:
+        raise SystemExit("Provide at least one career URL or --companies Excel file")
 
     if args.scheduled:
-        run_scheduled(args.career_urls, settings)
+        run_scheduled(career_urls, settings)
         return 0
 
-    summary = run_once(args.career_urls, settings)
+    summary = run_once(career_urls, settings)
     print(
         "JobHunter run complete: "
         f"found={summary['jobs_found']} "
