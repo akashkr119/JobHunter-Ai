@@ -21,11 +21,39 @@ class FakeScraperFactory:
         return list(self.jobs_by_url.get(career_url, []))
 
 
-def build_scheduler(tmp_path, factory=None):
+class FakeNotifier:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.sent = []
+
+    @staticmethod
+    def format_job_alert(job, match):
+        return f"{job.title}: {match['score']}%"
+
+    def send(self, channel, **kwargs):
+        if self.fail:
+            raise RuntimeError("notification failed")
+        self.sent.append((channel, kwargs))
+        return {"success": True, "channel": channel}
+
+
+def build_scheduler(tmp_path, factory=None, notifier=None):
     return Scheduler(
         scraper_factory=factory or FakeScraperFactory(),
         matcher=SkillMatcher(),
         database=Database(tmp_path / "jobs.db"),
+        notifier=notifier,
+    )
+
+
+def sample_job(url="https://example.com/jobs/1", description="Python Selenium Pytest Docker"):
+    return Job(
+        title="QA Automation Engineer",
+        company="Example",
+        location="Bengaluru",
+        apply_url=url,
+        description=description,
+        platform="greenhouse",
     )
 
 
@@ -49,32 +77,17 @@ def test_start_method_is_callable(tmp_path):
 
 def test_run_pipeline_scrapes_matches_and_saves_jobs(tmp_path):
     url = "https://boards.greenhouse.io/example"
-    factory = FakeScraperFactory(
-        {
-            url: [
-                Job(
-                    title="QA Automation Engineer",
-                    company="Example",
-                    location="Bengaluru",
-                    apply_url="https://example.com/jobs/1",
-                    description="Python Selenium Pytest Docker",
-                    platform="greenhouse",
-                )
-            ]
-        }
-    )
-    scheduler = build_scheduler(tmp_path, factory)
+    scheduler = build_scheduler(tmp_path, FakeScraperFactory({url: [sample_job()]}))
 
     summary = scheduler.run_pipeline(
-        [url],
-        ["python", "selenium", "pytest"],
-        min_score=50,
+        [url], ["python", "selenium", "pytest"], min_score=50
     )
 
     assert summary["sources"] == 1
     assert summary["jobs_found"] == 1
     assert summary["jobs_saved"] == 1
     assert summary["jobs_skipped"] == 0
+    assert summary["notifications_sent"] == 0
     assert summary["errors"] == []
 
     jobs = scheduler.database.list_jobs()
@@ -86,27 +99,13 @@ def test_run_pipeline_scrapes_matches_and_saves_jobs(tmp_path):
 
 def test_run_pipeline_filters_jobs_below_minimum_score(tmp_path):
     url = "https://jobs.lever.co/example"
-    factory = FakeScraperFactory(
-        {
-            url: [
-                Job(
-                    title="Platform Engineer",
-                    company="Example",
-                    location="Remote",
-                    apply_url="https://example.com/jobs/2",
-                    description="Python Docker Kubernetes AWS",
-                    platform="lever",
-                )
-            ]
-        }
+    job = sample_job(
+        url="https://example.com/jobs/2",
+        description="Python Docker Kubernetes AWS",
     )
-    scheduler = build_scheduler(tmp_path, factory)
+    scheduler = build_scheduler(tmp_path, FakeScraperFactory({url: [job]}))
 
-    summary = scheduler.run_pipeline(
-        [url],
-        ["python"],
-        min_score=50,
-    )
+    summary = scheduler.run_pipeline([url], ["python"], min_score=50)
 
     assert summary["jobs_found"] == 1
     assert summary["jobs_saved"] == 0
@@ -115,37 +114,94 @@ def test_run_pipeline_filters_jobs_below_minimum_score(tmp_path):
     scheduler.database.close()
 
 
+def test_matching_job_sends_notification(tmp_path):
+    url = "https://boards.greenhouse.io/example"
+    notifier = FakeNotifier()
+    scheduler = build_scheduler(
+        tmp_path,
+        FakeScraperFactory({url: [sample_job()]}),
+        notifier=notifier,
+    )
+
+    summary = scheduler.run_pipeline(
+        [url],
+        ["python", "selenium", "pytest"],
+        min_score=50,
+        notification={"channel": "telegram", "chat_id": "12345"},
+    )
+
+    assert summary["jobs_saved"] == 1
+    assert summary["notifications_sent"] == 1
+    assert len(notifier.sent) == 1
+    channel, kwargs = notifier.sent[0]
+    assert channel == "telegram"
+    assert kwargs["chat_id"] == "12345"
+    assert "75.0%" in kwargs["message"]
+    scheduler.database.close()
+
+
+def test_below_threshold_job_does_not_send_notification(tmp_path):
+    url = "https://jobs.lever.co/example"
+    notifier = FakeNotifier()
+    job = sample_job(description="Python Docker Kubernetes AWS")
+    scheduler = build_scheduler(
+        tmp_path, FakeScraperFactory({url: [job]}), notifier=notifier
+    )
+
+    summary = scheduler.run_pipeline(
+        [url],
+        ["python"],
+        min_score=50,
+        notification={"channel": "telegram", "chat_id": "123"},
+    )
+
+    assert summary["jobs_skipped"] == 1
+    assert summary["notifications_sent"] == 0
+    assert notifier.sent == []
+    scheduler.database.close()
+
+
+def test_notification_failure_does_not_lose_saved_job(tmp_path):
+    url = "https://boards.greenhouse.io/example"
+    notifier = FakeNotifier(fail=True)
+    scheduler = build_scheduler(
+        tmp_path,
+        FakeScraperFactory({url: [sample_job()]}),
+        notifier=notifier,
+    )
+
+    summary = scheduler.run_pipeline(
+        [url],
+        ["python", "selenium", "pytest"],
+        min_score=50,
+        notification={"channel": "telegram", "chat_id": "123"},
+    )
+
+    assert summary["jobs_saved"] == 1
+    assert summary["notifications_sent"] == 0
+    assert len(scheduler.database.list_jobs()) == 1
+    assert len(summary["errors"]) == 1
+    assert summary["errors"][0]["stage"] == "notify"
+    scheduler.database.close()
+
+
 def test_one_failed_source_does_not_stop_other_sources(tmp_path):
     bad_url = "https://example.com/bad"
     good_url = "https://boards.greenhouse.io/good"
     factory = FakeScraperFactory(
-        {
-            good_url: [
-                Job(
-                    title="Python Engineer",
-                    company="Good Company",
-                    location="Remote",
-                    apply_url="https://example.com/jobs/good",
-                    description="Python",
-                    platform="greenhouse",
-                )
-            ]
-        },
+        {good_url: [sample_job(url="https://example.com/jobs/good", description="Python")]},
         failing_urls={bad_url},
     )
     scheduler = build_scheduler(tmp_path, factory)
 
-    summary = scheduler.run_pipeline(
-        [bad_url, good_url],
-        ["python"],
-        min_score=50,
-    )
+    summary = scheduler.run_pipeline([bad_url, good_url], ["python"], min_score=50)
 
     assert summary["sources"] == 2
     assert summary["jobs_found"] == 1
     assert summary["jobs_saved"] == 1
     assert len(summary["errors"]) == 1
     assert summary["errors"][0]["career_url"] == bad_url
+    assert summary["errors"][0]["stage"] == "scrape"
     scheduler.database.close()
 
 
@@ -170,6 +226,7 @@ def test_add_pipeline_job_registers_interval_job(tmp_path):
         ["python", "selenium"],
         hours=2,
         min_score=60,
+        notification={"channel": "telegram", "chat_id": "123"},
     )
 
     assert job is not None
