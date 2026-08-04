@@ -2,7 +2,7 @@
 
 import os
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, render_template, request
 
 from database.db import Database
 
@@ -10,7 +10,6 @@ app = Flask(__name__)
 
 
 def _database_path() -> str:
-    """Return dashboard database path, allowing deployment-time override."""
     return os.getenv("JOBHUNTER_DATABASE_PATH", "jobs.db")
 
 
@@ -23,34 +22,23 @@ def _list_jobs(min_score: float = 0.0, limit: int = 100) -> list[dict]:
 
 
 def _job_summary(job: dict) -> dict:
-    """Expose recommendation data without returning the full description."""
     return {
-        "id": job["id"],
-        "title": job["title"],
-        "company": job["company"],
-        "location": job["location"],
-        "platform": job["platform"],
-        "match_score": job["match_score"],
-        "matched_skills": job["matched_skills"],
-        "missing_skills": job["missing_skills"],
-        "required_skills": job["required_skills"],
+        "id": job["id"], "title": job["title"], "company": job["company"],
+        "location": job["location"], "platform": job["platform"],
+        "match_score": job["match_score"], "matched_skills": job["matched_skills"],
+        "missing_skills": job["missing_skills"], "required_skills": job["required_skills"],
         "preferred_skills": job["preferred_skills"],
         "matched_required_skills": job["matched_required_skills"],
         "missing_required_skills": job["missing_required_skills"],
-        "apply_url": job["apply_url"],
-        "discovered_at": job["discovered_at"],
+        "apply_url": job["apply_url"], "discovered_at": job["discovered_at"],
         "updated_at": job["updated_at"],
     }
 
 
 @app.get("/")
 def home():
-    return jsonify({
-        "application": "JobHunter-AI",
-        "status": "running",
-        "message": "Dashboard initialized",
-        "endpoints": {"jobs": "/api/jobs", "health": "/health"},
-    })
+    """Render the interactive recommendation dashboard."""
+    return render_template("index.html")
 
 
 @app.get("/health")
@@ -60,7 +48,6 @@ def health():
 
 @app.get("/api/jobs")
 def jobs():
-    """Return ranked job recommendations with match explanations."""
     try:
         min_score = float(request.args.get("min_score", 0))
         limit = int(request.args.get("limit", 100))
@@ -70,14 +57,12 @@ def jobs():
         return jsonify({"error": "min_score must be between 0 and 100"}), 400
     if not 1 <= limit <= 500:
         return jsonify({"error": "limit must be between 1 and 500"}), 400
-
     recommendations = [_job_summary(job) for job in _list_jobs(min_score, limit)]
     return jsonify({"count": len(recommendations), "jobs": recommendations})
 
 
 @app.get("/api/jobs/<int:job_id>")
 def job_detail(job_id: int):
-    """Return one recommendation including its normalized description."""
     db = Database(_database_path())
     try:
         job = db.get_job(job_id)
