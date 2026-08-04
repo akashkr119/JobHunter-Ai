@@ -37,13 +37,12 @@ def load_resume_skills(settings: Settings) -> list[str]:
     return ResumeParser().parse(settings.resume_path)["skills"]
 
 
-def load_career_urls(excel_path: str) -> list[str]:
+def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
     """Resolve career URLs from structured company Excel input.
 
-    Explicit career URLs are preferred. When only a website is supplied,
-    deterministic common career-page candidates are generated. A company name
-    without either URL is not guessed into a scraper URL because WebsiteFinder
-    currently returns a search-engine discovery URL in that case.
+    Explicit career URLs are preferred. For rows containing only a company
+    website, JobHunter can inspect the homepage for actual Careers/Jobs links
+    and then append deterministic fallback candidates.
     """
     targets = CompanyLoader().load_targets(excel_path)
     career_finder = CareerFinder()
@@ -57,7 +56,7 @@ def load_career_urls(excel_path: str) -> list[str]:
             candidates = [website_finder.normalize_url(career_url)]
         elif target.get("website"):
             website = website_finder.find(target["company"], target["website"])
-            candidates = career_finder.find(website)
+            candidates = career_finder.find(website, discover=discover)
         else:
             continue
 
@@ -102,14 +101,15 @@ def run_scheduled(career_urls: list[str], settings: Settings) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="JobHunter AI job discovery pipeline")
-    parser.add_argument(
-        "career_urls",
-        nargs="*",
-        help="Company career/ATS URLs to scan",
-    )
+    parser.add_argument("career_urls", nargs="*", help="Company career/ATS URLs to scan")
     parser.add_argument(
         "--companies",
         help="Excel file containing Company, Website and/or Career URL columns",
+    )
+    parser.add_argument(
+        "--no-discovery",
+        action="store_true",
+        help="Do not fetch company homepages; use common career URL candidates only",
     )
     parser.add_argument(
         "--scheduled",
@@ -117,9 +117,7 @@ def parse_args() -> argparse.Namespace:
         help="Run continuously using JOBHUNTER_SCHEDULER_HOURS",
     )
     parser.add_argument(
-        "--env-file",
-        default=None,
-        help="Optional path to a .env configuration file",
+        "--env-file", default=None, help="Optional path to a .env configuration file"
     )
     return parser.parse_args()
 
@@ -129,7 +127,9 @@ def main() -> int:
     settings = Settings.from_env(args.env_file)
     career_urls = list(args.career_urls)
     if args.companies:
-        career_urls.extend(load_career_urls(args.companies))
+        career_urls.extend(
+            load_career_urls(args.companies, discover=not args.no_discovery)
+        )
     career_urls = list(dict.fromkeys(career_urls))
     if not career_urls:
         raise SystemExit("Provide at least one career URL or --companies Excel file")
