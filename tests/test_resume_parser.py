@@ -1,54 +1,40 @@
 """Unit tests for resume parser."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from matcher.resume_parser import ResumeParser
 
 
 def test_resume_parser_instance():
-    parser = ResumeParser()
-    assert parser is not None
+    assert ResumeParser() is not None
 
 
 def test_has_parse_method():
-    parser = ResumeParser()
-    assert hasattr(parser, "parse")
+    assert hasattr(ResumeParser(), "parse")
 
 
 def test_parse_method_is_callable():
-    parser = ResumeParser()
-    assert callable(parser.parse)
+    assert callable(ResumeParser().parse)
 
 
 def test_extract_text_reads_plain_text_resume(tmp_path):
     resume = tmp_path / "resume.txt"
     resume.write_text("Python Selenium Pytest", encoding="utf-8")
-
-    parser = ResumeParser()
-    assert parser.extract_text(resume) == "Python Selenium Pytest"
+    assert ResumeParser().extract_text(resume) == "Python Selenium Pytest"
 
 
 def test_extract_skills_is_case_insensitive():
-    parser = ResumeParser()
-    skills = parser.extract_skills("PYTHON, Selenium, pytest and Docker")
-
-    assert "python" in skills
-    assert "selenium" in skills
-    assert "pytest" in skills
-    assert "docker" in skills
+    skills = ResumeParser().extract_skills("PYTHON, Selenium, pytest and Docker")
+    assert {"python", "selenium", "pytest", "docker"}.issubset(skills)
 
 
 def test_extract_skills_detects_automotive_skills():
-    parser = ResumeParser()
-    skills = parser.extract_skills(
+    skills = ResumeParser().extract_skills(
         "Automotive testing experience with CAN, CANoe, CAPL and UDS."
     )
-
-    assert "automotive" in skills
-    assert "can" in skills
-    assert "canoe" in skills
-    assert "capl" in skills
-    assert "uds" in skills
+    assert {"automotive", "can", "canoe", "capl", "uds"}.issubset(skills)
 
 
 def test_parse_returns_structured_resume(tmp_path):
@@ -57,37 +43,70 @@ def test_parse_returns_structured_resume(tmp_path):
         "QA Automation Engineer with Python, Selenium, Pytest and Jenkins.",
         encoding="utf-8",
     )
-
-    parser = ResumeParser()
-    result = parser.parse(resume)
-
+    result = ResumeParser().parse(resume)
     assert result["path"] == str(resume)
+    assert result["format"] == "txt"
     assert "QA Automation Engineer" in result["text"]
-    assert "python" in result["skills"]
-    assert "selenium" in result["skills"]
-    assert "pytest" in result["skills"]
-    assert "jenkins" in result["skills"]
+    assert {"python", "selenium", "pytest", "jenkins"}.issubset(result["skills"])
 
 
 def test_missing_resume_raises_file_not_found(tmp_path):
-    parser = ResumeParser()
     with pytest.raises(FileNotFoundError):
-        parser.parse(tmp_path / "missing.txt")
+        ResumeParser().parse(tmp_path / "missing.txt")
 
 
 def test_unsupported_resume_format_rejected(tmp_path):
-    resume = tmp_path / "resume.pdf"
-    resume.write_bytes(b"not a real pdf")
-
-    parser = ResumeParser()
+    resume = tmp_path / "resume.rtf"
+    resume.write_text("Python", encoding="utf-8")
     with pytest.raises(ValueError, match="Unsupported resume format"):
-        parser.parse(resume)
+        ResumeParser().parse(resume)
 
 
 def test_markdown_resume_is_supported(tmp_path):
     resume = tmp_path / "resume.md"
     resume.write_text("# Skills\nPython\nSelenium", encoding="utf-8")
+    result = ResumeParser().parse(resume)
+    assert result["format"] == "md"
+    assert {"python", "selenium"}.issubset(result["skills"])
+
+
+def test_docx_resume_parsing(tmp_path):
+    from docx import Document
+
+    resume = tmp_path / "resume.docx"
+    document = Document()
+    document.add_paragraph("QA Engineer with Python Selenium Pytest")
+    table = document.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Docker Jenkins"
+    document.save(resume)
 
     result = ResumeParser().parse(resume)
-    assert "python" in result["skills"]
-    assert "selenium" in result["skills"]
+    assert result["format"] == "docx"
+    assert "QA Engineer" in result["text"]
+    assert {"python", "selenium", "pytest", "docker", "jenkins"}.issubset(
+        result["skills"]
+    )
+
+
+def test_pdf_resume_parsing(tmp_path):
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"placeholder")
+
+    page = MagicMock()
+    page.extract_text.return_value = "Python Selenium Pytest Docker"
+    reader = MagicMock()
+    reader.pages = [page]
+
+    with patch("pypdf.PdfReader", return_value=reader) as pdf_reader:
+        result = ResumeParser().parse(resume)
+
+    pdf_reader.assert_called_once_with(str(resume))
+    assert result["format"] == "pdf"
+    assert {"python", "selenium", "pytest", "docker"}.issubset(result["skills"])
+
+
+def test_text_cleanup_removes_blank_lines_and_extra_spaces(tmp_path):
+    resume = tmp_path / "resume.txt"
+    resume.write_text("Python   Selenium\n\n   Pytest  ", encoding="utf-8")
+    text = ResumeParser().extract_text(resume)
+    assert text == "Python Selenium\nPytest"
