@@ -2,8 +2,16 @@
 
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+
 from config.settings import Settings
-from main import build_scheduler, load_resume_skills, run_once, run_scheduled
+from main import (
+    build_scheduler,
+    load_career_urls,
+    load_resume_skills,
+    run_once,
+    run_scheduled,
+)
 
 
 def make_settings(tmp_path, **overrides):
@@ -46,10 +54,54 @@ def test_load_resume_skills(tmp_path):
     resume = tmp_path / "resume.txt"
     resume.write_text("Python Selenium Pytest Docker", encoding="utf-8")
     settings = make_settings(tmp_path)
-
     skills = load_resume_skills(settings)
-
     assert {"python", "selenium", "pytest", "docker"}.issubset(skills)
+
+
+def test_load_career_urls_prefers_explicit_career_url(tmp_path):
+    workbook = tmp_path / "companies.xlsx"
+    pd.DataFrame(
+        [{
+            "Company": "Example",
+            "Website": "https://example.com",
+            "Career URL": "https://jobs.lever.co/example",
+        }]
+    ).to_excel(workbook, index=False)
+
+    urls = load_career_urls(str(workbook))
+
+    assert urls == ["https://jobs.lever.co/example"]
+
+
+def test_load_career_urls_generates_candidates_from_website(tmp_path):
+    workbook = tmp_path / "companies.xlsx"
+    pd.DataFrame(
+        [{"Company": "Example", "Website": "example.com"}]
+    ).to_excel(workbook, index=False)
+
+    urls = load_career_urls(str(workbook))
+
+    assert "https://example.com/careers" in urls
+    assert "https://example.com/jobs" in urls
+
+
+def test_load_career_urls_skips_company_without_urls(tmp_path):
+    workbook = tmp_path / "companies.xlsx"
+    pd.DataFrame([{"Company": "Example"}]).to_excel(workbook, index=False)
+
+    assert load_career_urls(str(workbook)) == []
+
+
+def test_load_career_urls_removes_duplicates(tmp_path):
+    workbook = tmp_path / "companies.xlsx"
+    pd.DataFrame(
+        [
+            {"Company": "Example", "Career URL": "https://jobs.lever.co/example"},
+            {"Company": "Example", "Career URL": "https://jobs.lever.co/example"},
+        ]
+    ).to_excel(workbook, index=False)
+
+    assert load_career_urls(str(workbook)) == ["https://jobs.lever.co/example"]
 
 
 @patch("main.load_resume_skills", return_value=["python", "selenium"])
