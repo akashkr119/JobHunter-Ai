@@ -1,4 +1,4 @@
-"""Load company names from Excel files."""
+"""Load company targets from Excel files."""
 
 from pathlib import Path
 
@@ -6,70 +6,104 @@ import pandas as pd
 
 
 class CompanyLoader:
-    """Load unique company names from an Excel workbook."""
+    """Load company names or structured company targets from Excel."""
 
     COMPANY_COLUMN_NAMES = (
-        "company",
-        "company name",
-        "company_name",
-        "organization",
-        "organisation",
+        "company", "company name", "company_name", "organization", "organisation",
+    )
+    WEBSITE_COLUMN_NAMES = (
+        "website", "website url", "website_url", "company website", "company_website",
+    )
+    CAREER_COLUMN_NAMES = (
+        "career", "careers", "career url", "career_url", "careers url", "careers_url",
+        "jobs url", "jobs_url",
     )
 
-    def load(
-        self,
-        excel_path: str | Path,
-        company_column: str | None = None,
-    ) -> list[str]:
-        """Return unique, non-empty company names from an Excel file.
+    def load(self, excel_path: str | Path, company_column: str | None = None) -> list[str]:
+        """Return unique company names, preserving the original public API."""
+        df = self._read(excel_path)
+        if df.empty or len(df.columns) == 0:
+            return []
+        column = self._resolve_column(df, company_column, self.COMPANY_COLUMN_NAMES, fallback=True)
+        return self._clean_values(df[column])
 
-        If ``company_column`` is not supplied, common company-column names are
-        detected case-insensitively. For backward compatibility, the first
-        column is used when no known company column is present.
+    def load_targets(self, excel_path: str | Path) -> list[dict]:
+        """Load company, website and career URL records from an Excel workbook.
+
+        Only the company column is required. Website/career columns are optional.
+        Duplicate rows are removed using company + website + career URL.
         """
-        path = Path(excel_path)
-
-        if not path.exists():
-            raise FileNotFoundError(f"Company Excel file not found: {path}")
-
-        if path.suffix.lower() not in {".xlsx", ".xls"}:
-            raise ValueError("CompanyLoader supports only .xlsx and .xls files")
-
-        df = pd.read_excel(path)
+        df = self._read(excel_path)
         if df.empty or len(df.columns) == 0:
             return []
 
-        column = self._resolve_company_column(df, company_column)
+        company_col = self._resolve_column(df, None, self.COMPANY_COLUMN_NAMES, fallback=True)
+        website_col = self._resolve_column(df, None, self.WEBSITE_COLUMN_NAMES)
+        career_col = self._resolve_column(df, None, self.CAREER_COLUMN_NAMES)
 
-        return (
-            df[column]
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .loc[lambda values: values.ne("")]
-            .drop_duplicates()
-            .tolist()
+        targets = []
+        seen = set()
+        for _, row in df.iterrows():
+            company = self._clean_cell(row.get(company_col))
+            if not company:
+                continue
+            website = self._clean_cell(row.get(website_col)) if website_col else ""
+            career_url = self._clean_cell(row.get(career_col)) if career_col else ""
+            key = (company.casefold(), website.casefold(), career_url.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append({
+                "company": company,
+                "website": website or None,
+                "career_url": career_url or None,
+            })
+        return targets
+
+    @staticmethod
+    def _read(excel_path: str | Path) -> pd.DataFrame:
+        path = Path(excel_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Company Excel file not found: {path}")
+        if path.suffix.lower() not in {".xlsx", ".xls"}:
+            raise ValueError("CompanyLoader supports only .xlsx and .xls files")
+        return pd.read_excel(path)
+
+    def _resolve_company_column(self, df: pd.DataFrame, company_column: str | None) -> str:
+        """Backward-compatible company-column resolver."""
+        return self._resolve_column(
+            df, company_column, self.COMPANY_COLUMN_NAMES, fallback=True
         )
 
-    def _resolve_company_column(
-        self,
-        df: pd.DataFrame,
-        company_column: str | None,
-    ) -> str:
-        """Resolve the column containing company names."""
-        if company_column is not None:
-            if company_column not in df.columns:
+    @staticmethod
+    def _resolve_column(df, explicit, candidates, fallback=False):
+        if explicit is not None:
+            if explicit not in df.columns:
                 raise ValueError(
-                    f"Company column '{company_column}' not found. "
-                    f"Available columns: {', '.join(map(str, df.columns))}"
+                    f"Column '{explicit}' not found. Available columns: "
+                    f"{', '.join(map(str, df.columns))}"
                 )
-            return company_column
+            return explicit
+        normalized = {str(column).strip().lower(): column for column in df.columns}
+        for candidate in candidates:
+            if candidate in normalized:
+                return normalized[candidate]
+        return df.columns[0] if fallback else None
 
-        normalized_columns = {
-            str(column).strip().lower(): column for column in df.columns
-        }
-        for candidate in self.COMPANY_COLUMN_NAMES:
-            if candidate in normalized_columns:
-                return normalized_columns[candidate]
+    @staticmethod
+    def _clean_cell(value) -> str:
+        if pd.isna(value):
+            return ""
+        return str(value).strip()
 
-        return df.columns[0]
+    @classmethod
+    def _clean_values(cls, series) -> list[str]:
+        values = []
+        seen = set()
+        for value in series:
+            cleaned = cls._clean_cell(value)
+            key = cleaned.casefold()
+            if cleaned and key not in seen:
+                seen.add(key)
+                values.append(cleaned)
+        return values
