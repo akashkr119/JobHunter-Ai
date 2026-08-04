@@ -60,29 +60,52 @@ def test_load_resume_skills(tmp_path):
 
 def test_load_career_urls_prefers_explicit_career_url(tmp_path):
     workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame(
-        [{
-            "Company": "Example",
-            "Website": "https://example.com",
-            "Career URL": "https://jobs.lever.co/example",
-        }]
-    ).to_excel(workbook, index=False)
+    pd.DataFrame([{
+        "Company": "Example",
+        "Website": "https://example.com",
+        "Career URL": "https://jobs.lever.co/example",
+    }]).to_excel(workbook, index=False)
 
     urls = load_career_urls(str(workbook))
 
     assert urls == ["https://jobs.lever.co/example"]
 
 
-def test_load_career_urls_generates_candidates_from_website(tmp_path):
+def test_load_career_urls_offline_mode_generates_candidates(tmp_path):
     workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame(
-        [{"Company": "Example", "Website": "example.com"}]
-    ).to_excel(workbook, index=False)
+    pd.DataFrame([{"Company": "Example", "Website": "example.com"}]).to_excel(
+        workbook, index=False
+    )
 
-    urls = load_career_urls(str(workbook))
+    with patch("main.CareerFinder") as finder_class:
+        finder = finder_class.return_value
+        finder.find.return_value = [
+            "https://example.com/careers",
+            "https://example.com/jobs",
+        ]
+        urls = load_career_urls(str(workbook), discover=False)
 
+    finder.find.assert_called_once_with("https://example.com", discover=False)
+    assert urls == ["https://example.com/careers", "https://example.com/jobs"]
+
+
+def test_load_career_urls_uses_discovered_ats_link(tmp_path):
+    workbook = tmp_path / "companies.xlsx"
+    pd.DataFrame([{"Company": "Example", "Website": "example.com"}]).to_excel(
+        workbook, index=False
+    )
+
+    with patch("main.CareerFinder") as finder_class:
+        finder = finder_class.return_value
+        finder.find.return_value = [
+            "https://boards.greenhouse.io/example",
+            "https://example.com/careers",
+        ]
+        urls = load_career_urls(str(workbook), discover=True)
+
+    finder.find.assert_called_once_with("https://example.com", discover=True)
+    assert urls[0] == "https://boards.greenhouse.io/example"
     assert "https://example.com/careers" in urls
-    assert "https://example.com/jobs" in urls
 
 
 def test_load_career_urls_skips_company_without_urls(tmp_path):
@@ -94,12 +117,10 @@ def test_load_career_urls_skips_company_without_urls(tmp_path):
 
 def test_load_career_urls_removes_duplicates(tmp_path):
     workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame(
-        [
-            {"Company": "Example", "Career URL": "https://jobs.lever.co/example"},
-            {"Company": "Example", "Career URL": "https://jobs.lever.co/example"},
-        ]
-    ).to_excel(workbook, index=False)
+    pd.DataFrame([
+        {"Company": "Example", "Career URL": "https://jobs.lever.co/example"},
+        {"Company": "Example", "Career URL": "https://jobs.lever.co/example"},
+    ]).to_excel(workbook, index=False)
 
     assert load_career_urls(str(workbook)) == ["https://jobs.lever.co/example"]
 
