@@ -1,7 +1,5 @@
 """Greenhouse ATS job-board scraper."""
 
-import html
-import re
 from urllib.parse import urlparse
 
 import requests
@@ -37,7 +35,7 @@ class GreenhouseScraper(JobScraper):
             title = item.get("title", "")
             location = (item.get("location") or {}).get("name", "")
             apply_url = item.get("absolute_url", "")
-            description = self._plain_text(item.get("content", ""))
+            description = self.clean_description(item.get("content", ""))
             job_company = company.strip() or board_token
 
             if not title or not apply_url:
@@ -62,11 +60,9 @@ class GreenhouseScraper(JobScraper):
         candidate = career_url.strip()
         if "://" not in candidate:
             candidate = f"https://{candidate}"
-
         parsed = urlparse(candidate)
         host = (parsed.hostname or "").lower()
         parts = [part for part in parsed.path.split("/") if part]
-
         if "greenhouse.io" not in host:
             raise ValueError(f"Not a Greenhouse career URL: {career_url}")
         if not parts:
@@ -74,10 +70,3 @@ class GreenhouseScraper(JobScraper):
         if parts[0] in {"embed", "boards"} and len(parts) > 1:
             return parts[1]
         return parts[0]
-
-    @staticmethod
-    def _plain_text(value: str) -> str:
-        """Convert an HTML job description into compact plain text."""
-        text = html.unescape(str(value or ""))
-        text = re.sub(r"<[^>]+>", " ", text)
-        return re.sub(r"\s+", " ", text).strip()
