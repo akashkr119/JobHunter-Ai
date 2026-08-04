@@ -1,7 +1,5 @@
 """Lever ATS job-postings scraper."""
 
-import html
-import re
 from urllib.parse import urlparse
 
 import requests
@@ -65,31 +63,23 @@ class LeverScraper(JobScraper):
         candidate = career_url.strip()
         if "://" not in candidate:
             candidate = f"https://{candidate}"
-
         parsed = urlparse(candidate)
         host = (parsed.hostname or "").lower()
         parts = [part for part in parsed.path.split("/") if part]
-
-        if not (host.endswith("lever.co") or host.endswith("lever.co")):
+        if not host.endswith("lever.co"):
             raise ValueError(f"Not a Lever career URL: {career_url}")
         if not parts:
             raise ValueError(f"Lever site token not found in URL: {career_url}")
-
         if host == "api.lever.co" and len(parts) >= 3 and parts[0] == "v0" and parts[1] == "postings":
             return parts[2]
-
         return parts[0]
 
     @staticmethod
     def _description(item: dict) -> str:
-        """Build compact plain-text description from Lever posting fields."""
-        pieces = [
+        """Build normalized description from Lever posting fields."""
+        return JobScraper.combine_description(
             item.get("descriptionPlain", ""),
             item.get("description", ""),
             item.get("additionalPlain", ""),
             item.get("additional", ""),
-        ]
-        text = " ".join(str(piece) for piece in pieces if piece)
-        text = html.unescape(text)
-        text = re.sub(r"<[^>]+>", " ", text)
-        return re.sub(r"\s+", " ", text).strip()
+        )
