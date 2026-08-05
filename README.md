@@ -11,11 +11,11 @@ JobHunter AI is an automated job discovery, matching, ranking, tracking, and ale
 | 3 | Recommendation Ranking Engine | ✅ Complete |
 | 4 | Dashboard Finalization | ✅ Complete |
 | 5 | Automated Production Runner | ✅ Complete |
-| 6 | V1 Hardening & Release | ⏳ Next |
+| 6 | V1 Hardening & Release | 🧪 Release validation |
 
 ## V1 capabilities
 
-JobHunter AI currently provides company career-page and ATS discovery, Greenhouse/Lever/Workday/SmartRecruiters scraping, resume parsing, weighted skill matching, job preferences, unified recommendation ranking, lifecycle detection, cross-source deduplication, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, and smart Email/Telegram alerts.
+JobHunter AI provides company career-page and ATS discovery, Greenhouse/Lever/Workday/SmartRecruiters scraping, resume parsing, weighted skill matching, job preferences, unified recommendation ranking, lifecycle detection, cross-source deduplication, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, and smart Email/Telegram alerts.
 
 Recommendation ranking combines resume fit, target preferences, freshness, application state, and active lifecycle state. The dashboard exposes recommendation scores and explanations and supports search/filtering, saved jobs, tracking, follow-ups, active/expired jobs, analytics, and mobile-friendly interaction.
 
@@ -43,7 +43,7 @@ JOBHUNTER_NOTIFICATION_MIN_PRIORITY
 JOBHUNTER_NOTIFICATION_MIN_RECOMMENDATION_SCORE
 ```
 
-See `docs/PRODUCTION.md` for configuration, operations, notifications, and the pre-release validation checklist.
+See `docs/PRODUCTION.md` for configuration, operations, notifications, and the release validation checklist. See `CHANGELOG.md` for the prepared `1.0.0` release notes.
 
 ## Project structure
 
@@ -65,7 +65,7 @@ JobHunter-Ai/
 └── pytest.ini
 ```
 
-## Development
+## Development and release gate
 
 Run the full automated suite with:
 
@@ -73,7 +73,7 @@ Run the full automated suite with:
 pytest
 ```
 
-Milestones 1–5 are implemented and CI-green. Milestone 6 is the final V1 hardening and release phase: regression validation, operational edge-case cleanup, configuration verification, release documentation, and preparation of `v1.0.0`.
+All six V1 implementation milestones are built. The remaining release gate is final green CI plus the production smoke checklist. After both pass, the repository can be tagged `v1.0.0`.
 
 ## Future direction — V3
 
