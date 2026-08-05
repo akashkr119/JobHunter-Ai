@@ -9,7 +9,7 @@ def test_app_exists():assert app is not None
 def test_app_has_test_client():assert hasattr(app,"test_client")
 def test_test_client_callable():assert callable(app.test_client)
 def test_homepage_renders_visual_dashboard():
-    response=app.test_client().get("/");html=response.get_data(as_text=True);assert response.status_code==200;assert "JobHunter AI" in html;assert 'id="search"' in html;assert 'id="score"' in html;assert 'id="platform"' in html;assert 'id="status"' in html;assert 'id="stats"' in html;assert "/api/analytics" in html;assert "/tracking" in html;assert "Save notes" in html;assert "Saved only" in html;assert "Apply" in html
+    response=app.test_client().get("/");html=response.get_data(as_text=True);assert response.status_code==200;assert "JobHunter AI" in html;assert 'id="search"' in html;assert 'id="score"' in html;assert 'id="platform"' in html;assert 'id="status"' in html;assert 'id="savedFilter"' in html;assert 'id="stats"' in html;assert "/api/analytics" in html;assert "/tracking" in html;assert "Save notes" in html;assert "Saved jobs" in html;assert "Apply" in html
 def test_health_endpoint():
     r=app.test_client().get("/health");assert r.status_code==200;assert r.get_json()=={"status":"healthy"}
 def test_analytics_endpoint_empty_database(tmp_path,monkeypatch):
