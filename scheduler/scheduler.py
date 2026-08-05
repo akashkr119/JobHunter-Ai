@@ -30,10 +30,11 @@ class Scheduler:
                 if match["score"]<float(min_score):summary["jobs_skipped"]+=1;continue
                 existing=self._existing_job(job);job_id=self.database.save_job(job,match=match);summary["jobs_saved"]+=1;stored=self.database.get_job(job_id)
                 if notification and self.notifier:
-                    if self._should_notify(stored,existing,notification):
-                        try:self._notify(job,match,notification,stored);self.database.mark_job_notified(job_id,stored["priority_label"]);summary["notifications_sent"]+=1
-                        except Exception as exc:summary["errors"].append({"career_url":career_url,"stage":"notify","apply_url":apply_url,"error":str(exc)})
-                    else:summary["notifications_suppressed"]+=1
+                    try:
+                        should_notify=self._should_notify(stored,existing,notification)
+                        if should_notify:self._notify(job,match,notification,stored);self.database.mark_job_notified(job_id,stored["priority_label"]);summary["notifications_sent"]+=1
+                        else:summary["notifications_suppressed"]+=1
+                    except Exception as exc:summary["errors"].append({"career_url":career_url,"stage":"notify","apply_url":apply_url,"error":str(exc)})
             if platform:
                 try:summary["jobs_expired"]+=self.database.mark_missing_jobs_inactive(seen_urls,platform=platform)
                 except Exception as exc:summary["errors"].append({"career_url":career_url,"stage":"lifecycle","error":str(exc)})
@@ -48,7 +49,6 @@ class Scheduler:
         if current<self.ALERT_PRIORITIES[minimum]:return False
         last=str(job.get("last_notified_priority") or "").strip().lower()
         if not last:return True
-        # Re-alert only when a previously notified job improves to a stronger tier.
         return current>self.ALERT_PRIORITIES.get(last,-1)
     def _platform_for_source(self,career_url,jobs):
         for job in jobs:
