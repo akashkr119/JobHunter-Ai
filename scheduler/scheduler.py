@@ -5,6 +5,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from crawler.scraper_factory import ScraperFactory
 from database.db import Database
 from matcher.skill_matcher import SkillMatcher
+from matcher.job_preferences import JobPreferences
 from notifier.notifier import Notifier
 class Scheduler:
     """Schedule and execute the JobHunter discovery pipeline."""
@@ -14,10 +15,10 @@ class Scheduler:
     def add_job(self,func,hours:int=1,**kwargs):
         if hours<=0:raise ValueError("hours must be greater than zero")
         return self._scheduler.add_job(func,trigger="interval",hours=hours,kwargs=kwargs or None)
-    def add_pipeline_job(self,career_urls:Iterable[str],resume_skills:Iterable[str],hours:int=1,min_score:float=0.0,notification:dict|None=None):return self.add_job(self.run_pipeline,hours=hours,career_urls=tuple(career_urls),resume_skills=tuple(resume_skills),min_score=min_score,notification=notification)
-    def run_pipeline(self,career_urls:Iterable[str],resume_skills:Iterable[str],min_score:float=0.0,company:str="",notification:dict|None=None)->dict:
+    def add_pipeline_job(self,career_urls:Iterable[str],resume_skills:Iterable[str],hours:int=1,min_score:float=0.0,notification:dict|None=None,preferences:JobPreferences|dict|None=None):return self.add_job(self.run_pipeline,hours=hours,career_urls=tuple(career_urls),resume_skills=tuple(resume_skills),min_score=min_score,notification=notification,preferences=preferences)
+    def run_pipeline(self,career_urls:Iterable[str],resume_skills:Iterable[str],min_score:float=0.0,company:str="",notification:dict|None=None,preferences:JobPreferences|dict|None=None)->dict:
         if not 0<=float(min_score)<=100:raise ValueError("min_score must be between 0 and 100")
-        skills=tuple(resume_skills);summary={"sources":0,"jobs_found":0,"jobs_saved":0,"jobs_skipped":0,"jobs_expired":0,"notifications_sent":0,"notifications_suppressed":0,"errors":[]}
+        prefs=preferences if isinstance(preferences,JobPreferences) else JobPreferences.from_dict(preferences);skills=tuple(resume_skills);summary={"sources":0,"jobs_found":0,"jobs_saved":0,"jobs_skipped":0,"jobs_preference_excluded":0,"jobs_expired":0,"notifications_sent":0,"notifications_suppressed":0,"errors":[]}
         for career_url in career_urls:
             summary["sources"]+=1
             try:jobs=self.scraper_factory.scrape(career_url,company=company)
@@ -26,7 +27,9 @@ class Scheduler:
             for job in jobs:
                 apply_url=str(getattr(job,"apply_url","") or "").strip()
                 if apply_url:seen_urls.append(apply_url)
-                match=self.matcher.match_job(skills,job)
+                preference=prefs.evaluate(job)
+                if preference["excluded_keywords"]:summary["jobs_preference_excluded"]+=1;summary["jobs_skipped"]+=1;continue
+                match=self.matcher.match_job(skills,job);match["preference_score"]=preference["preference_score"];match["preference_match"]=preference["preference_match"];match["preference_details"]=preference
                 if match["score"]<float(min_score):summary["jobs_skipped"]+=1;continue
                 existing=self._existing_job(job);job_id=self.database.save_job(job,match=match);summary["jobs_saved"]+=1;stored=self.database.get_job(job_id)
                 if notification and self.notifier:
