@@ -13,7 +13,8 @@ class ProductionRunner:
     def __init__(self,scheduler,career_urls,resume_skills,settings,history_path=None,lock_path=None):
         self.scheduler=scheduler;self.career_urls=tuple(career_urls);self.resume_skills=tuple(resume_skills);self.settings=settings
         base=Path(getattr(settings,"database_path","jobs.db")).resolve().parent
-        self.history_path=Path(history_path or os.getenv("JOBHUNTER_RUN_HISTORY_PATH",base/"run_history.jsonl"));self.lock_path=Path(lock_path or os.getenv("JOBHUNTER_RUN_LOCK_PATH",base/"jobhunter.lock"));self._lock_fd=None;self._stopping=threading.Event();self.log=logging.getLogger("jobhunter.runner")
+        configured_history=getattr(settings,"run_history_path",None);configured_lock=getattr(settings,"run_lock_path",None)
+        self.history_path=Path(history_path or configured_history or base/"run_history.jsonl");self.lock_path=Path(lock_path or configured_lock or base/"jobhunter.lock");self._lock_fd=None;self._stopping=threading.Event();self.log=logging.getLogger("jobhunter.runner")
     def acquire_lock(self):
         self.lock_path.parent.mkdir(parents=True,exist_ok=True)
         try:self._lock_fd=os.open(self.lock_path,os.O_CREAT|os.O_EXCL|os.O_WRONLY);os.write(self._lock_fd,str(os.getpid()).encode());return True
