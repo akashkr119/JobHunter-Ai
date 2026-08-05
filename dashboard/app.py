@@ -4,13 +4,18 @@ from flask import Flask,jsonify,render_template,request
 from database.db import Database
 app=Flask(__name__)
 def _database_path():return os.getenv("JOBHUNTER_DATABASE_PATH","jobs.db")
-def _list_jobs(min_score=0.0,limit=100,status=None,saved=None):
+def _list_jobs(min_score=0.0,limit=100,status=None,saved=None,active=None):
     db=Database(_database_path())
-    try:return db.list_jobs(min_score=min_score,limit=limit,status=status,saved=saved)
+    try:return db.list_jobs(min_score=min_score,limit=limit,status=status,saved=saved,active=active)
     finally:db.close()
 def _job_summary(job):
-    keys=("id","title","company","location","platform","match_score","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","is_saved","notes","apply_url","discovered_at","updated_at")
+    keys=("id","title","company","location","platform","match_score","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","is_saved","notes","is_active","last_seen_at","apply_url","discovered_at","updated_at")
     return {k:job[k] for k in keys}
+def _bool_query(name):
+    value=request.args.get(name)
+    if value is None:return None
+    if value.lower() not in ("true","false","1","0"):raise ValueError(f"{name} must be true or false")
+    return value.lower() in ("true","1")
 @app.get("/")
 def home():return render_template("index.html")
 @app.get("/health")
@@ -22,15 +27,12 @@ def analytics():
     finally:db.close()
 @app.get("/api/jobs")
 def jobs():
-    try:min_score=float(request.args.get("min_score",0));limit=int(request.args.get("limit",100))
-    except ValueError:return jsonify({"error":"min_score must be numeric and limit must be an integer"}),400
+    try:min_score=float(request.args.get("min_score",0));limit=int(request.args.get("limit",100));saved=_bool_query("saved");active=_bool_query("active")
+    except ValueError as exc:return jsonify({"error":str(exc) if "must be true or false" in str(exc) else "min_score must be numeric and limit must be an integer"}),400
     if not 0<=min_score<=100:return jsonify({"error":"min_score must be between 0 and 100"}),400
     if not 1<=limit<=500:return jsonify({"error":"limit must be between 1 and 500"}),400
-    status=request.args.get("status") or None;saved_arg=request.args.get("saved");saved=None
-    if saved_arg is not None:
-        if saved_arg.lower() not in ("true","false","1","0"):return jsonify({"error":"saved must be true or false"}),400
-        saved=saved_arg.lower() in ("true","1")
-    try:recommendations=[_job_summary(j) for j in _list_jobs(min_score,limit,status,saved)]
+    status=request.args.get("status") or None
+    try:recommendations=[_job_summary(j) for j in _list_jobs(min_score,limit,status,saved,active)]
     except ValueError as exc:return jsonify({"error":str(exc),"allowed_statuses":Database.APPLICATION_STATUSES}),400
     return jsonify({"count":len(recommendations),"jobs":recommendations})
 @app.get("/api/jobs/<int:job_id>")
