@@ -9,7 +9,7 @@ def _list_jobs(min_score=0.0,limit=100,status=None,saved=None,active=None):
     try:return db.list_jobs(min_score=min_score,limit=limit,status=status,saved=saved,active=active)
     finally:db.close()
 def _job_summary(job):
-    keys=("id","title","company","location","platform","match_score","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","is_saved","notes","is_active","last_seen_at","apply_url","discovered_at","updated_at")
+    keys=("id","title","company","location","platform","match_score","priority_score","priority_label","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","is_saved","notes","is_active","last_seen_at","apply_url","discovered_at","updated_at")
     return {k:job[k] for k in keys}
 def _bool_query(name):
     value=request.args.get(name)
