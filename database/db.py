@@ -1,80 +1,69 @@
 """SQLite persistence for discovered, matched and tracked jobs."""
-
-import json
-import sqlite3
+import json,sqlite3
 from collections.abc import Iterable
 from pathlib import Path
-
-
 class Database:
-    """Store normalized jobs, match results and application progress."""
     MATCH_LIST_COLUMNS=("matched_skills","missing_skills","required_skills","preferred_skills","general_skills","matched_required_skills","missing_required_skills")
     APPLICATION_STATUSES=("new","viewed","applied","interview","rejected","offer")
-
     def __init__(self,db_path:str|Path="jobs.db"):
-        self.db_path=str(db_path); self.conn=sqlite3.connect(self.db_path); self.conn.row_factory=sqlite3.Row; self._create_schema()
-    def connect(self): return self.conn
-    def execute(self,query,params=()):
-        c=self.conn.cursor(); c.execute(query,params); self.conn.commit(); return c
-    def fetchall(self,query,params=()):
-        c=self.conn.cursor(); c.execute(query,params); return c.fetchall()
-
+        self.db_path=str(db_path);self.conn=sqlite3.connect(self.db_path);self.conn.row_factory=sqlite3.Row;self._create_schema()
+    def connect(self):return self.conn
+    def execute(self,q,p=()):c=self.conn.cursor();c.execute(q,p);self.conn.commit();return c
+    def fetchall(self,q,p=()):c=self.conn.cursor();c.execute(q,p);return c.fetchall()
     def save_job(self,job,match=None):
-        data=self._job_dict(job); apply_url=str(data.get("apply_url") or "").strip(); title=str(data.get("title") or "").strip(); company=str(data.get("company") or "").strip()
-        if not apply_url: raise ValueError("Job apply_url is required")
-        if not title: raise ValueError("Job title is required")
-        if not company: raise ValueError("Job company is required")
-        match=match or {}; score=float(match.get("score",0)); lists={n:list(match.get(n) or []) for n in self.MATCH_LIST_COLUMNS}
-        c=self.execute("""INSERT INTO jobs(title,company,location,apply_url,description,platform,match_score,matched_skills,missing_skills,required_skills,preferred_skills,general_skills,matched_required_skills,missing_required_skills) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(apply_url) DO UPDATE SET title=excluded.title,company=excluded.company,location=excluded.location,description=excluded.description,platform=excluded.platform,match_score=excluded.match_score,matched_skills=excluded.matched_skills,missing_skills=excluded.missing_skills,required_skills=excluded.required_skills,preferred_skills=excluded.preferred_skills,general_skills=excluded.general_skills,matched_required_skills=excluded.matched_required_skills,missing_required_skills=excluded.missing_required_skills,updated_at=CURRENT_TIMESTAMP""",(title,company,str(data.get("location") or "").strip(),apply_url,str(data.get("description") or "").strip(),str(data.get("platform") or "unknown").strip().lower(),score,*(json.dumps(lists[n]) for n in self.MATCH_LIST_COLUMNS)))
+        d=self._job_dict(job);u=str(d.get("apply_url") or "").strip();t=str(d.get("title") or "").strip();co=str(d.get("company") or "").strip()
+        if not u:raise ValueError("Job apply_url is required")
+        if not t:raise ValueError("Job title is required")
+        if not co:raise ValueError("Job company is required")
+        match=match or {};lists={n:list(match.get(n) or []) for n in self.MATCH_LIST_COLUMNS};c=self.execute("""INSERT INTO jobs(title,company,location,apply_url,description,platform,match_score,matched_skills,missing_skills,required_skills,preferred_skills,general_skills,matched_required_skills,missing_required_skills) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(apply_url) DO UPDATE SET title=excluded.title,company=excluded.company,location=excluded.location,description=excluded.description,platform=excluded.platform,match_score=excluded.match_score,matched_skills=excluded.matched_skills,missing_skills=excluded.missing_skills,required_skills=excluded.required_skills,preferred_skills=excluded.preferred_skills,general_skills=excluded.general_skills,matched_required_skills=excluded.matched_required_skills,missing_required_skills=excluded.missing_required_skills,updated_at=CURRENT_TIMESTAMP""",(t,co,str(d.get("location") or "").strip(),u,str(d.get("description") or "").strip(),str(d.get("platform") or "unknown").strip().lower(),float(match.get("score",0)),*(json.dumps(lists[n]) for n in self.MATCH_LIST_COLUMNS)))
         if c.lastrowid:return int(c.lastrowid)
-        return int(self.conn.execute("SELECT id FROM jobs WHERE apply_url=?",(apply_url,)).fetchone()["id"])
-
+        return int(self.conn.execute("SELECT id FROM jobs WHERE apply_url=?",(u,)).fetchone()["id"])
     def save_jobs(self,jobs:Iterable,matches=None):
-        matches=matches or {}; return [self.save_job(j,matches.get(str(self._job_dict(j).get("apply_url") or ""))) for j in jobs]
-
+        matches=matches or {};return [self.save_job(j,matches.get(str(self._job_dict(j).get("apply_url") or ""))) for j in jobs]
     def update_application_status(self,job_id,status):
-        normalized=str(status or "").strip().lower()
-        if normalized not in self.APPLICATION_STATUSES: raise ValueError(f"Invalid application status: {status}")
-        if self.get_job(job_id) is None: raise KeyError(f"Job not found: {job_id}")
-        self.execute("UPDATE jobs SET application_status=?,status_updated_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",(normalized,int(job_id))); return self.get_job(job_id)
-
-    def list_jobs(self,min_score=0.0,limit=100,status=None):
-        params=[float(min_score)]; where="match_score >= ?"
+        s=str(status or "").strip().lower()
+        if s not in self.APPLICATION_STATUSES:raise ValueError(f"Invalid application status: {status}")
+        self._require_job(job_id);self.execute("UPDATE jobs SET application_status=?,status_updated_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",(s,int(job_id)));return self.get_job(job_id)
+    def update_job_tracking(self,job_id,saved=None,notes=None):
+        """Update bookmark and private notes without affecting scraped fields."""
+        self._require_job(job_id);sets=[];params=[]
+        if saved is not None:sets.append("is_saved=?");params.append(1 if bool(saved) else 0)
+        if notes is not None:
+            notes=str(notes)
+            if len(notes)>5000:raise ValueError("notes must be 5000 characters or fewer")
+            sets.append("notes=?");params.append(notes)
+        if not sets:raise ValueError("saved or notes is required")
+        sets.append("updated_at=CURRENT_TIMESTAMP");params.append(int(job_id));self.execute(f"UPDATE jobs SET {','.join(sets)} WHERE id=?",tuple(params));return self.get_job(job_id)
+    def list_jobs(self,min_score=0.0,limit=100,status=None,saved=None):
+        params=[float(min_score)];where="match_score >= ?"
         if status is not None:
-            normalized=str(status).strip().lower()
-            if normalized not in self.APPLICATION_STATUSES: raise ValueError(f"Invalid application status: {status}")
-            where+=" AND application_status = ?"; params.append(normalized)
-        params.append(int(limit)); rows=self.fetchall(f"SELECT * FROM jobs WHERE {where} ORDER BY match_score DESC,discovered_at DESC LIMIT ?",tuple(params)); return [self._row_to_dict(r) for r in rows]
-
+            s=str(status).strip().lower()
+            if s not in self.APPLICATION_STATUSES:raise ValueError(f"Invalid application status: {status}")
+            where+=" AND application_status=?";params.append(s)
+        if saved is not None:where+=" AND is_saved=?";params.append(1 if saved else 0)
+        params.append(int(limit));return [self._row_to_dict(r) for r in self.fetchall(f"SELECT * FROM jobs WHERE {where} ORDER BY match_score DESC,discovered_at DESC LIMIT ?",tuple(params))]
     def get_analytics(self):
-        """Return compact dashboard statistics in one database query."""
-        row=self.conn.execute("""SELECT COUNT(*) AS total, COALESCE(ROUND(AVG(match_score),1),0) AS average_match_score, SUM(CASE WHEN application_status='new' THEN 1 ELSE 0 END) AS new, SUM(CASE WHEN application_status='viewed' THEN 1 ELSE 0 END) AS viewed, SUM(CASE WHEN application_status='applied' THEN 1 ELSE 0 END) AS applied, SUM(CASE WHEN application_status='interview' THEN 1 ELSE 0 END) AS interview, SUM(CASE WHEN application_status='rejected' THEN 1 ELSE 0 END) AS rejected, SUM(CASE WHEN application_status='offer' THEN 1 ELSE 0 END) AS offer FROM jobs""").fetchone()
-        result=dict(row)
-        for status in self.APPLICATION_STATUSES: result[status]=int(result.get(status) or 0)
-        result["total"]=int(result["total"] or 0); result["average_match_score"]=float(result["average_match_score"] or 0)
-        result["response_rate"]=round(((result["interview"]+result["offer"])/result["applied"]*100),1) if result["applied"] else 0.0
-        return result
-
+        r=dict(self.conn.execute("""SELECT COUNT(*) total,COALESCE(ROUND(AVG(match_score),1),0) average_match_score,SUM(CASE WHEN is_saved=1 THEN 1 ELSE 0 END) saved,SUM(CASE WHEN application_status='new' THEN 1 ELSE 0 END) new,SUM(CASE WHEN application_status='viewed' THEN 1 ELSE 0 END) viewed,SUM(CASE WHEN application_status='applied' THEN 1 ELSE 0 END) applied,SUM(CASE WHEN application_status='interview' THEN 1 ELSE 0 END) interview,SUM(CASE WHEN application_status='rejected' THEN 1 ELSE 0 END) rejected,SUM(CASE WHEN application_status='offer' THEN 1 ELSE 0 END) offer FROM jobs""").fetchone());r["total"]=int(r["total"] or 0);r["saved"]=int(r["saved"] or 0);r["average_match_score"]=float(r["average_match_score"] or 0)
+        for s in self.APPLICATION_STATUSES:r[s]=int(r.get(s) or 0)
+        r["response_rate"]=round((r["interview"]+r["offer"])/r["applied"]*100,1) if r["applied"] else 0.0;return r
     def get_job(self,job_id):
-        row=self.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone(); return self._row_to_dict(row) if row else None
-    def close(self): self.conn.close()
-
+        row=self.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone();return self._row_to_dict(row) if row else None
+    def _require_job(self,job_id):
+        if self.get_job(job_id) is None:raise KeyError(f"Job not found: {job_id}")
+    def close(self):self.conn.close()
     def _create_schema(self):
-        self.conn.execute("""CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',required_skills TEXT NOT NULL DEFAULT '[]',preferred_skills TEXT NOT NULL DEFAULT '[]',general_skills TEXT NOT NULL DEFAULT '[]',matched_required_skills TEXT NOT NULL DEFAULT '[]',missing_required_skills TEXT NOT NULL DEFAULT '[]',application_status TEXT NOT NULL DEFAULT 'new',status_updated_at TEXT,discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"""); self._migrate_schema()
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score DESC)"); self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company)"); self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_platform ON jobs(platform)"); self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_application_status ON jobs(application_status)"); self.conn.commit()
-
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',required_skills TEXT NOT NULL DEFAULT '[]',preferred_skills TEXT NOT NULL DEFAULT '[]',general_skills TEXT NOT NULL DEFAULT '[]',matched_required_skills TEXT NOT NULL DEFAULT '[]',missing_required_skills TEXT NOT NULL DEFAULT '[]',application_status TEXT NOT NULL DEFAULT 'new',status_updated_at TEXT,is_saved INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""");self._migrate_schema();self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score DESC)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_application_status ON jobs(application_status)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_saved ON jobs(is_saved)");self.conn.commit()
     def _migrate_schema(self):
-        existing={r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)").fetchall()}; migrations={"required_skills":"TEXT NOT NULL DEFAULT '[]'","preferred_skills":"TEXT NOT NULL DEFAULT '[]'","general_skills":"TEXT NOT NULL DEFAULT '[]'","matched_required_skills":"TEXT NOT NULL DEFAULT '[]'","missing_required_skills":"TEXT NOT NULL DEFAULT '[]'","application_status":"TEXT NOT NULL DEFAULT 'new'","status_updated_at":"TEXT"}
-        for column,definition in migrations.items():
-            if column not in existing:self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
-
+        e={r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)").fetchall()};m={"required_skills":"TEXT NOT NULL DEFAULT '[]'","preferred_skills":"TEXT NOT NULL DEFAULT '[]'","general_skills":"TEXT NOT NULL DEFAULT '[]'","matched_required_skills":"TEXT NOT NULL DEFAULT '[]'","missing_required_skills":"TEXT NOT NULL DEFAULT '[]'","application_status":"TEXT NOT NULL DEFAULT 'new'","status_updated_at":"TEXT","is_saved":"INTEGER NOT NULL DEFAULT 0","notes":"TEXT NOT NULL DEFAULT ''"}
+        for c,d in m.items():
+            if c not in e:self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {c} {d}")
     @staticmethod
-    def _job_dict(job):
-        if isinstance(job,dict):return job
-        if hasattr(job,"to_dict"):return job.to_dict()
-        return {"title":getattr(job,"title",""),"company":getattr(job,"company",""),"location":getattr(job,"location",""),"apply_url":getattr(job,"apply_url",""),"description":getattr(job,"description",""),"platform":getattr(job,"platform","unknown")}
+    def _job_dict(j):
+        if isinstance(j,dict):return j
+        if hasattr(j,"to_dict"):return j.to_dict()
+        return {"title":getattr(j,"title",""),"company":getattr(j,"company",""),"location":getattr(j,"location",""),"apply_url":getattr(j,"apply_url",""),"description":getattr(j,"description",""),"platform":getattr(j,"platform","unknown")}
     @classmethod
     def _row_to_dict(cls,row):
-        result=dict(row)
-        for column in cls.MATCH_LIST_COLUMNS:result[column]=json.loads(result.get(column) or "[]")
-        return result
+        r=dict(row)
+        for c in cls.MATCH_LIST_COLUMNS:r[c]=json.loads(r.get(c) or "[]")
+        r["is_saved"]=bool(r.get("is_saved",0));return r
