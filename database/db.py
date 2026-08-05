@@ -1,6 +1,7 @@
 """SQLite persistence for discovered, matched and tracked jobs."""
 import json,re,sqlite3
 from collections.abc import Iterable
+from datetime import datetime,timezone
 from pathlib import Path
 class Database:
     MATCH_LIST_COLUMNS=("matched_skills","missing_skills","required_skills","preferred_skills","general_skills","matched_required_skills","missing_required_skills")
@@ -13,32 +14,41 @@ class Database:
     @staticmethod
     def _identity_text(value):return re.sub(r"[^a-z0-9]+"," ",str(value or "").lower()).strip()
     @classmethod
-    def _job_key(cls,title,company,location=""):
-        """Stable cross-source identity used when ATS URLs differ for one vacancy."""
-        return "|".join((cls._identity_text(company),cls._identity_text(title),cls._identity_text(location)))
+    def _job_key(cls,title,company,location=""):return "|".join((cls._identity_text(company),cls._identity_text(title),cls._identity_text(location)))
+    @staticmethod
+    def _age_days(value):
+        if not value:return 365.0
+        try:
+            dt=datetime.fromisoformat(str(value).replace("Z","+00:00"));dt=dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc);return max(0.0,(datetime.now(timezone.utc)-dt).total_seconds()/86400)
+        except (TypeError,ValueError):return 365.0
+    @classmethod
+    def _priority(cls,row):
+        """Return 0-100 apply-now priority from match, freshness and state."""
+        match=max(0.0,min(100.0,float(row.get("match_score") or 0)));age=cls._age_days(row.get("last_seen_at") or row.get("discovered_at"));freshness=max(0.0,100.0-min(age,30.0)/30.0*100.0);status=str(row.get("application_status") or "new").lower();state={"new":100,"viewed":85,"applied":35,"interview":15,"offer":5,"rejected":0}.get(status,50);active=100 if row.get("is_active",True) else 0;score=match*.60+freshness*.20+state*.10+active*.10
+        return round(max(0.0,min(100.0,score)),1)
+    @classmethod
+    def _priority_label(cls,score):
+        if score>=80:return "apply_now"
+        if score>=65:return "high"
+        if score>=45:return "medium"
+        return "low"
     def save_job(self,job,match=None):
         d=self._job_dict(job);u=str(d.get("apply_url") or "").strip();t=str(d.get("title") or "").strip();co=str(d.get("company") or "").strip();loc=str(d.get("location") or "").strip();platform=str(d.get("platform") or "unknown").strip().lower();key=self._job_key(t,co,loc)
         if not u:raise ValueError("Job apply_url is required")
         if not t:raise ValueError("Job title is required")
         if not co:raise ValueError("Job company is required")
-        match=match or {};lists={n:list(match.get(n) or []) for n in self.MATCH_LIST_COLUMNS};values=(t,co,loc,u,platform,float(match.get("score",0)),str(d.get("description") or "").strip(),key,*(json.dumps(lists[n]) for n in self.MATCH_LIST_COLUMNS))
-        existing=self.conn.execute("SELECT id,apply_url,match_score FROM jobs WHERE apply_url=? OR (job_key=? AND job_key<>'') ORDER BY CASE WHEN apply_url=? THEN 0 ELSE 1 END,id LIMIT 1",(u,key,u)).fetchone()
+        match=match or {};lists={n:list(match.get(n) or []) for n in self.MATCH_LIST_COLUMNS};values=(t,co,loc,u,platform,float(match.get("score",0)),str(d.get("description") or "").strip(),key,*(json.dumps(lists[n]) for n in self.MATCH_LIST_COLUMNS));existing=self.conn.execute("SELECT id,apply_url FROM jobs WHERE apply_url=? OR (job_key=? AND job_key<>'') ORDER BY CASE WHEN apply_url=? THEN 0 ELSE 1 END,id LIMIT 1",(u,key,u)).fetchone()
         if existing:
-            # Keep one record and all user tracking. Prefer the newest discovered URL;
-            # duplicate URLs from other sources are retained for lifecycle matching.
-            aliases={r["apply_url"] for r in self.conn.execute("SELECT apply_url FROM job_aliases WHERE job_id=?",(existing["id"],)).fetchall()};aliases.add(existing["apply_url"]);aliases.add(u)
-            self.execute("""UPDATE jobs SET title=?,company=?,location=?,apply_url=?,platform=?,match_score=?,description=?,job_key=?,matched_skills=?,missing_skills=?,required_skills=?,preferred_skills=?,general_skills=?,matched_required_skills=?,missing_required_skills=?,last_seen_at=CURRENT_TIMESTAMP,is_active=1,updated_at=CURRENT_TIMESTAMP WHERE id=?""",(*values,int(existing["id"])))
+            aliases={r["apply_url"] for r in self.conn.execute("SELECT apply_url FROM job_aliases WHERE job_id=?",(existing["id"],)).fetchall()};aliases.update((existing["apply_url"],u));self.execute("""UPDATE jobs SET title=?,company=?,location=?,apply_url=?,platform=?,match_score=?,description=?,job_key=?,matched_skills=?,missing_skills=?,required_skills=?,preferred_skills=?,general_skills=?,matched_required_skills=?,missing_required_skills=?,last_seen_at=CURRENT_TIMESTAMP,is_active=1,updated_at=CURRENT_TIMESTAMP WHERE id=?""",(*values,int(existing["id"])))
             for alias in aliases:self.execute("INSERT OR IGNORE INTO job_aliases(job_id,apply_url) VALUES(?,?)",(int(existing["id"]),alias))
             return int(existing["id"])
         c=self.execute("""INSERT INTO jobs(title,company,location,apply_url,platform,match_score,description,job_key,matched_skills,missing_skills,required_skills,preferred_skills,general_skills,matched_required_skills,missing_required_skills,last_seen_at,is_active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,1)""",values);job_id=int(c.lastrowid);self.execute("INSERT OR IGNORE INTO job_aliases(job_id,apply_url) VALUES(?,?)",(job_id,u));return job_id
-    def save_jobs(self,jobs:Iterable,matches=None):
-        matches=matches or {};return [self.save_job(j,matches.get(str(self._job_dict(j).get("apply_url") or ""))) for j in jobs]
+    def save_jobs(self,jobs:Iterable,matches=None):matches=matches or {};return [self.save_job(j,matches.get(str(self._job_dict(j).get("apply_url") or ""))) for j in jobs]
     def mark_missing_jobs_inactive(self,seen_apply_urls,platform=None):
         urls={str(u).strip() for u in (seen_apply_urls or []) if str(u).strip()};where="is_active=1";params=[]
         if platform is not None:where+=" AND platform=?";params.append(str(platform).strip().lower())
-        if urls:
-            marks=','.join('?' for _ in urls);where+=f" AND id NOT IN (SELECT job_id FROM job_aliases WHERE apply_url IN ({marks}))";params.extend(sorted(urls))
-        c=self.execute(f"UPDATE jobs SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE {where}",tuple(params));return c.rowcount
+        if urls:marks=','.join('?' for _ in urls);where+=f" AND id NOT IN (SELECT job_id FROM job_aliases WHERE apply_url IN ({marks}))";params.extend(sorted(urls))
+        return self.execute(f"UPDATE jobs SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE {where}",tuple(params)).rowcount
     def update_application_status(self,job_id,status):
         s=str(status or "").strip().lower()
         if s not in self.APPLICATION_STATUSES:raise ValueError(f"Invalid application status: {status}")
@@ -60,9 +70,9 @@ class Database:
             where+=" AND application_status=?";params.append(s)
         if saved is not None:where+=" AND is_saved=?";params.append(1 if saved else 0)
         if active is not None:where+=" AND is_active=?";params.append(1 if active else 0)
-        params.append(int(limit));return [self._row_to_dict(r) for r in self.fetchall(f"SELECT * FROM jobs WHERE {where} ORDER BY is_active DESC,match_score DESC,discovered_at DESC LIMIT ?",tuple(params))]
+        rows=[self._row_to_dict(r) for r in self.fetchall(f"SELECT * FROM jobs WHERE {where}",tuple(params))];rows.sort(key=lambda r:(r["priority_score"],r["match_score"]),reverse=True);return rows[:int(limit)]
     def get_analytics(self):
-        r=dict(self.conn.execute("""SELECT COUNT(*) total,SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) active,SUM(CASE WHEN is_active=0 THEN 1 ELSE 0 END) inactive,SUM(CASE WHEN date(discovered_at)=date('now') THEN 1 ELSE 0 END) new_today,COALESCE(ROUND(AVG(CASE WHEN is_active=1 THEN match_score END),1),0) average_match_score,SUM(CASE WHEN is_saved=1 THEN 1 ELSE 0 END) saved,SUM(CASE WHEN application_status='new' THEN 1 ELSE 0 END) new,SUM(CASE WHEN application_status='viewed' THEN 1 ELSE 0 END) viewed,SUM(CASE WHEN application_status='applied' THEN 1 ELSE 0 END) applied,SUM(CASE WHEN application_status='interview' THEN 1 ELSE 0 END) interview,SUM(CASE WHEN application_status='rejected' THEN 1 ELSE 0 END) rejected,SUM(CASE WHEN application_status='offer' THEN 1 ELSE 0 END) offer FROM jobs""").fetchone());r["total"]=int(r["total"] or 0);r["active"]=int(r["active"] or 0);r["inactive"]=int(r["inactive"] or 0);r["new_today"]=int(r["new_today"] or 0);r["saved"]=int(r["saved"] or 0);r["average_match_score"]=float(r["average_match_score"] or 0)
+        r=dict(self.conn.execute("""SELECT COUNT(*) total,SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) active,SUM(CASE WHEN is_active=0 THEN 1 ELSE 0 END) inactive,SUM(CASE WHEN date(discovered_at)=date('now') THEN 1 ELSE 0 END) new_today,COALESCE(ROUND(AVG(CASE WHEN is_active=1 THEN match_score END),1),0) average_match_score,SUM(CASE WHEN is_saved=1 THEN 1 ELSE 0 END) saved,SUM(CASE WHEN application_status='new' THEN 1 ELSE 0 END) new,SUM(CASE WHEN application_status='viewed' THEN 1 ELSE 0 END) viewed,SUM(CASE WHEN application_status='applied' THEN 1 ELSE 0 END) applied,SUM(CASE WHEN application_status='interview' THEN 1 ELSE 0 END) interview,SUM(CASE WHEN application_status='rejected' THEN 1 ELSE 0 END) rejected,SUM(CASE WHEN application_status='offer' THEN 1 ELSE 0 END) offer FROM jobs""").fetchone());r={k:(int(v or 0) if k not in ("average_match_score",) else float(v or 0)) for k,v in r.items()}
         for s in self.APPLICATION_STATUSES:r[s]=int(r.get(s) or 0)
         r["response_rate"]=round((r["interview"]+r["offer"])/r["applied"]*100,1) if r["applied"] else 0.0;return r
     def get_job(self,job_id):
@@ -91,4 +101,4 @@ class Database:
     def _row_to_dict(cls,row):
         r=dict(row)
         for c in cls.MATCH_LIST_COLUMNS:r[c]=json.loads(r.get(c) or "[]")
-        r["is_saved"]=bool(r.get("is_saved",0));r["is_active"]=bool(r.get("is_active",1));return r
+        r["is_saved"]=bool(r.get("is_saved",0));r["is_active"]=bool(r.get("is_active",1));r["priority_score"]=cls._priority(r);r["priority_label"]=cls._priority_label(r["priority_score"]);return r
