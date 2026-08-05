@@ -2,14 +2,19 @@
 import os
 from flask import Flask,jsonify,render_template,request
 from database.db import Database
+from matcher.recommendation_ranker import RecommendationRanker
 app=Flask(__name__)
 def _database_path():return os.getenv("JOBHUNTER_DATABASE_PATH","jobs.db")
+def _rank(job):
+    if job is None:return None
+    result=dict(job);result.update(RecommendationRanker.score(result));return result
 def _list_jobs(min_score=0.0,limit=100,status=None,saved=None,active=None,follow_up=None):
     db=Database(_database_path())
-    try:return db.list_jobs(min_score=min_score,limit=limit,status=status,saved=saved,active=active,follow_up=follow_up)
+    try:
+        rows=db.list_jobs(min_score=min_score,limit=500,status=status,saved=saved,active=active,follow_up=follow_up);return RecommendationRanker.rank(rows)[:int(limit)]
     finally:db.close()
 def _job_summary(job):
-    keys=("id","title","company","location","platform","match_score","preference_score","preference_match","preference_details","priority_score","priority_label","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","applied_at","follow_up_days","follow_up_completed","follow_up_status","follow_up_due_at","follow_up_days_remaining","is_saved","notes","is_active","last_seen_at","apply_url","discovered_at","updated_at")
+    keys=("id","title","company","location","platform","match_score","preference_score","preference_match","preference_details","recommendation_score","recommendation_label","recommendation_breakdown","priority_score","priority_label","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","applied_at","follow_up_days","follow_up_completed","follow_up_status","follow_up_due_at","follow_up_days_remaining","is_saved","notes","is_active","last_seen_at","apply_url","discovered_at","updated_at")
     return {k:job.get(k) for k in keys}
 def _bool_query(name):
     value=request.args.get(name)
@@ -41,7 +46,7 @@ def job_detail(job_id):
     try:job=db.get_job(job_id)
     finally:db.close()
     if job is None:return jsonify({"error":"Job not found"}),404
-    return jsonify(job)
+    return jsonify(_rank(job))
 @app.patch("/api/jobs/<int:job_id>/status")
 def update_job_status(job_id):
     payload=request.get_json(silent=True) or {};status=payload.get("status")
@@ -52,7 +57,7 @@ def update_job_status(job_id):
         except ValueError as exc:return jsonify({"error":str(exc),"allowed_statuses":Database.APPLICATION_STATUSES}),400
         except KeyError:return jsonify({"error":"Job not found"}),404
     finally:db.close()
-    return jsonify(_job_summary(job))
+    return jsonify(_job_summary(_rank(job)))
 @app.patch("/api/jobs/<int:job_id>/follow-up")
 def update_follow_up(job_id):
     payload=request.get_json(silent=True) or {}
@@ -63,7 +68,7 @@ def update_follow_up(job_id):
         except (ValueError,TypeError) as exc:return jsonify({"error":str(exc)}),400
         except KeyError:return jsonify({"error":"Job not found"}),404
     finally:db.close()
-    return jsonify(_job_summary(job))
+    return jsonify(_job_summary(_rank(job)))
 @app.patch("/api/jobs/<int:job_id>/tracking")
 def update_job_tracking(job_id):
     payload=request.get_json(silent=True) or {}
@@ -75,5 +80,5 @@ def update_job_tracking(job_id):
         except ValueError as exc:return jsonify({"error":str(exc)}),400
         except KeyError:return jsonify({"error":"Job not found"}),404
     finally:db.close()
-    return jsonify(_job_summary(job))
+    return jsonify(_job_summary(_rank(job)))
 if __name__=="__main__":app.run(host="0.0.0.0",port=5000,debug=True)
