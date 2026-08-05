@@ -2,6 +2,8 @@
 
 import argparse
 import logging
+from pathlib import Path
+from urllib.parse import urlparse
 
 from config.settings import Settings
 from crawler.career_finder import CareerFinder
@@ -19,14 +21,7 @@ def build_scheduler(settings: Settings) -> Scheduler:
     """Build application services from centralized settings."""
     notifier = None
     if settings.notification_channel:
-        notifier = Notifier(
-            smtp_host=settings.smtp_host,
-            smtp_port=settings.smtp_port,
-            smtp_username=settings.smtp_username,
-            smtp_password=settings.smtp_password,
-            smtp_sender=settings.smtp_sender,
-            telegram_bot_token=settings.telegram_bot_token,
-        )
+        notifier = Notifier(smtp_host=settings.smtp_host,smtp_port=settings.smtp_port,smtp_username=settings.smtp_username,smtp_password=settings.smtp_password,smtp_sender=settings.smtp_sender,telegram_bot_token=settings.telegram_bot_token)
     return Scheduler(matcher=SkillMatcher(),database=Database(settings.database_path),notifier=notifier)
 
 
@@ -48,6 +43,20 @@ def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
     return urls
 
 
+def validate_startup(career_urls:list[str],settings:Settings)->None:
+    """Fail fast on unsafe or incomplete runtime configuration."""
+    resume=Path(settings.resume_path)
+    if not resume.is_file():raise ValueError(f"Resume file not found: {resume}")
+    if not career_urls:raise ValueError("Provide at least one career URL or --companies Excel file")
+    for url in career_urls:
+        parsed=urlparse(str(url).strip())
+        if parsed.scheme not in {"http","https"} or not parsed.netloc:raise ValueError(f"Invalid career URL: {url}")
+    Path(settings.database_path).expanduser().resolve().parent.mkdir(parents=True,exist_ok=True)
+    if settings.run_history_path:Path(settings.run_history_path).expanduser().resolve().parent.mkdir(parents=True,exist_ok=True)
+    if settings.run_lock_path:Path(settings.run_lock_path).expanduser().resolve().parent.mkdir(parents=True,exist_ok=True)
+    settings.notification_config()
+
+
 def run_once(career_urls:list[str],settings:Settings)->dict:
     """Execute one complete discovery run."""
     scheduler=build_scheduler(settings)
@@ -65,12 +74,14 @@ def parse_args()->argparse.Namespace:
 
 
 def main()->int:
-    args=parse_args();settings=Settings.from_env(args.env_file);logging.basicConfig(level=getattr(logging,str(getattr(settings,"log_level","INFO")).upper(),logging.INFO),format="%(asctime)s %(levelname)s %(name)s %(message)s");career_urls=list(args.career_urls)
-    if args.companies:career_urls.extend(load_career_urls(args.companies,discover=not args.no_discovery))
-    career_urls=list(dict.fromkeys(career_urls))
-    if not career_urls:raise SystemExit("Provide at least one career URL or --companies Excel file")
-    if args.scheduled:run_scheduled(career_urls,settings);return 0
-    summary=run_once(career_urls,settings);print("JobHunter run complete: "f"found={summary['jobs_found']} "f"saved={summary['jobs_saved']} "f"skipped={summary['jobs_skipped']} "f"notifications={summary['notifications_sent']} "f"errors={len(summary['errors'])}");return 0 if not summary["errors"] else 1
+    args=parse_args()
+    try:
+        settings=Settings.from_env(args.env_file);logging.basicConfig(level=getattr(logging,str(getattr(settings,"log_level","INFO")).upper(),logging.INFO),format="%(asctime)s %(levelname)s %(name)s %(message)s");career_urls=list(args.career_urls)
+        if args.companies:career_urls.extend(load_career_urls(args.companies,discover=not args.no_discovery))
+        career_urls=list(dict.fromkeys(career_urls));validate_startup(career_urls,settings)
+        if args.scheduled:run_scheduled(career_urls,settings);return 0
+        summary=run_once(career_urls,settings);print("JobHunter run complete: "f"found={summary['jobs_found']} "f"saved={summary['jobs_saved']} "f"skipped={summary['jobs_skipped']} "f"notifications={summary['notifications_sent']} "f"errors={len(summary['errors'])}");return 0 if not summary["errors"] else 1
+    except (ValueError,FileNotFoundError) as exc:raise SystemExit(f"Configuration error: {exc}") from exc
 
 
 if __name__=="__main__":raise SystemExit(main())
