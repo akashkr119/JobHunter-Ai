@@ -14,6 +14,7 @@ DATABASE_PATH = DATABASE_DIR / "jobs.db"
 
 USER_AGENT = "JobHunterAI/1.0"
 REQUEST_TIMEOUT = 30
+ALERT_PRIORITIES = {"apply_now", "high", "medium", "low"}
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,7 @@ class Settings:
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     notification_channel: str | None = None
+    notification_min_priority: str = "apply_now"
 
     @classmethod
     def from_env(cls, env_file: str | None = None) -> "Settings":
@@ -52,6 +54,7 @@ class Settings:
             telegram_bot_token=_optional_env("JOBHUNTER_TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=_optional_env("JOBHUNTER_TELEGRAM_CHAT_ID"),
             notification_channel=_optional_env("JOBHUNTER_NOTIFICATION_CHANNEL"),
+            notification_min_priority=os.getenv("JOBHUNTER_NOTIFICATION_MIN_PRIORITY", "apply_now").strip().lower() or "apply_now",
         )
         settings.validate()
         return settings
@@ -67,19 +70,22 @@ class Settings:
         channel = (self.notification_channel or "").strip().lower()
         if channel not in {"", "email", "telegram"}:
             raise ValueError("JOBHUNTER_NOTIFICATION_CHANNEL must be email or telegram")
+        if self.notification_min_priority not in ALERT_PRIORITIES:
+            raise ValueError("JOBHUNTER_NOTIFICATION_MIN_PRIORITY must be apply_now, high, medium or low")
 
     def notification_config(self) -> dict | None:
-        """Return Scheduler-compatible notification configuration."""
+        """Return Scheduler-compatible smart notification configuration."""
         channel = (self.notification_channel or "").strip().lower()
         if not channel:
             return None
+        config = {"minimum_priority": self.notification_min_priority}
         if channel == "telegram":
             if not self.telegram_bot_token or not self.telegram_chat_id:
                 raise ValueError("Telegram notification requires bot token and chat id")
-            return {"channel": "telegram", "chat_id": self.telegram_chat_id}
+            return {"channel": "telegram", "chat_id": self.telegram_chat_id, **config}
         if not self.smtp_host or not self.smtp_sender or not self.email_recipient:
             raise ValueError("Email notification requires SMTP host, sender and recipient")
-        return {"channel": "email", "recipient": self.email_recipient}
+        return {"channel": "email", "recipient": self.email_recipient, **config}
 
 
 def _optional_env(name: str) -> str | None:
