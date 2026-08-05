@@ -16,6 +16,11 @@ def _list_jobs(min_score=0.0,limit=100,status=None,saved=None,active=None,follow
 def _job_summary(job):
     keys=("id","title","company","location","platform","match_score","preference_score","preference_match","preference_details","recommendation_score","recommendation_label","recommendation_breakdown","priority_score","priority_label","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","applied_at","follow_up_days","follow_up_completed","follow_up_status","follow_up_due_at","follow_up_days_remaining","is_saved","notes","is_active","last_seen_at","apply_url","discovered_at","updated_at")
     return {k:job.get(k) for k in keys}
+def _recommendation_analytics(rows):
+    ranked=RecommendationRanker.rank(rows);active=[j for j in ranked if j.get("is_active",True)];labels={"top_pick":0,"strong_match":0,"good_match":0,"consider":0}
+    for job in active:labels[job["recommendation_label"]]=labels.get(job["recommendation_label"],0)+1
+    scores=[j["recommendation_score"] for j in active]
+    return {"average_recommendation_score":round(sum(scores)/len(scores),1) if scores else 0.0,"top_picks":labels["top_pick"],"strong_matches":labels["strong_match"],"good_matches":labels["good_match"],"consider":labels["consider"],"recommendation_labels":labels}
 def _bool_query(name):
     value=request.args.get(name)
     if value is None:return None
@@ -28,7 +33,8 @@ def health():return jsonify({"status":"healthy"})
 @app.get("/api/analytics")
 def analytics():
     db=Database(_database_path())
-    try:return jsonify(db.get_analytics())
+    try:
+        data=db.get_analytics();rows=db.list_jobs(limit=500);data.update(_recommendation_analytics(rows));return jsonify(data)
     finally:db.close()
 @app.get("/api/jobs")
 def jobs():
