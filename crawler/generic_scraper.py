@@ -66,7 +66,10 @@ class GenericScraper(JobScraper):
     def _clean(value):return re.sub(r"\s+"," ",str(value or "")).strip()
     @staticmethod
     def _location_from_text(text:str)->str:
-        match=re.search(r"(?:location|city)\s*[:\-]\s*([^|•;]{2,80})",text,re.I);return match.group(1).strip(" ,") if match else ""
+        # BeautifulSoup's get_text separator is collapsed above, so stop before the
+        # next common vacancy field label rather than consuming the whole card.
+        match=re.search(r"(?:location|city)\s*[:\-]\s*(.+?)(?=\s+(?:experience|qualification|requirements?|responsibilities|department|apply|opening|vacancy)\s*[:\-]|$)",text,re.I)
+        return match.group(1).strip(" ,;|•") if match else ""
     @classmethod
     def _nearby_location(cls,anchor)->str:
         parent=anchor.parent
