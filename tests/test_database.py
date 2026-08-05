@@ -50,10 +50,22 @@ def test_invalid_application_status_rejected(tmp_path):
     db=Database(tmp_path/"jobs.db");job_id=db.save_job({"title":"A","company":"Example","apply_url":"https://example.com/a"})
     with pytest.raises(ValueError,match="Invalid application status"):db.update_application_status(job_id,"hired")
     db.close()
+def test_applied_job_gets_follow_up_schedule(tmp_path):
+    db=Database(tmp_path/"jobs.db");job_id=db.save_job({"title":"QA","company":"Example","apply_url":"https://example.com/qa"});job=db.update_application_status(job_id,"applied");assert job["applied_at"];assert job["follow_up_days"]==7;assert job["follow_up_status"]=="scheduled";assert job["follow_up_due_at"];db.close()
+def test_overdue_follow_up_is_detected_and_filterable(tmp_path):
+    db=Database(tmp_path/"jobs.db");job_id=db.save_job({"title":"QA","company":"Example","apply_url":"https://example.com/qa"});db.update_application_status(job_id,"applied");old=(datetime.now(timezone.utc)-timedelta(days=10)).isoformat();db.execute("UPDATE jobs SET applied_at=? WHERE id=?",(old,job_id));assert db.get_job(job_id)["follow_up_status"]=="overdue";assert db.list_jobs(follow_up="overdue")[0]["id"]==job_id;assert db.get_analytics()["follow_up_due"]==1;db.close()
+def test_follow_up_can_be_configured_and_completed(tmp_path):
+    db=Database(tmp_path/"jobs.db");job_id=db.save_job({"title":"QA","company":"Example","apply_url":"https://example.com/qa"});db.update_application_status(job_id,"applied");job=db.update_follow_up(job_id,days=14);assert job["follow_up_days"]==14;job=db.update_follow_up(job_id,completed=True);assert job["follow_up_completed"] is True;assert job["follow_up_status"]=="none";db.close()
+def test_follow_up_not_shown_after_interview_or_rejection(tmp_path):
+    db=Database(tmp_path/"jobs.db");job_id=db.save_job({"title":"QA","company":"Example","apply_url":"https://example.com/qa"});db.update_application_status(job_id,"applied");db.update_application_status(job_id,"interview");assert db.get_job(job_id)["follow_up_status"]=="none";db.update_application_status(job_id,"rejected");assert db.get_job(job_id)["follow_up_status"]=="none";db.close()
+def test_invalid_follow_up_days_rejected(tmp_path):
+    db=Database(tmp_path/"jobs.db");job_id=db.save_job({"title":"QA","company":"Example","apply_url":"https://example.com/qa"})
+    with pytest.raises(ValueError,match="between 1 and 90"):db.update_follow_up(job_id,days=0)
+    db.close()
 def test_saved_job_and_notes_can_be_updated(tmp_path):
     db=Database(tmp_path/"jobs.db");job_id=db.save_job({"title":"QA","company":"Example","apply_url":"https://example.com/qa"});updated=db.update_job_tracking(job_id,saved=True,notes="Prepare Selenium framework examples");assert updated["is_saved"] is True;assert updated["notes"]=="Prepare Selenium framework examples";db.close()
 def test_analytics_empty_database(tmp_path):
-    db=Database(tmp_path/"jobs.db");a=db.get_analytics();assert a["total"]==0;assert a["active"]==0;assert a["average_match_score"]==0.0;assert a["response_rate"]==0.0;db.close()
+    db=Database(tmp_path/"jobs.db");a=db.get_analytics();assert a["total"]==0;assert a["active"]==0;assert a["average_match_score"]==0.0;assert a["response_rate"]==0.0;assert a["follow_up_due"]==0;db.close()
 def test_analytics_active_average_excludes_expired_jobs(tmp_path):
     db=Database(tmp_path/"jobs.db");db.save_job({"title":"Active","company":"Example","apply_url":"https://example.com/a","platform":"greenhouse"},match={"score":80});db.save_job({"title":"Expired","company":"Example","apply_url":"https://example.com/b","platform":"greenhouse"},match={"score":20});db.mark_missing_jobs_inactive(["https://example.com/a"],platform="greenhouse");assert db.get_analytics()["average_match_score"]==80.0;db.close()
 def test_list_jobs_orders_by_match_score_when_freshness_equal(tmp_path):
@@ -63,4 +75,4 @@ def test_save_job_requires_apply_url(tmp_path):
     with pytest.raises(ValueError,match="apply_url"):db.save_job({"title":"QA","company":"Example"})
     db.close()
 def test_existing_database_is_migrated_without_losing_jobs(tmp_path):
-    path=tmp_path/"legacy.db";conn=sqlite3.connect(path);conn.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""");conn.execute("INSERT INTO jobs(title,company,apply_url) VALUES(?,?,?)",("Legacy QA","Example","https://example.com/legacy"));conn.commit();conn.close();db=Database(path);stored=db.get_job(1);assert stored["is_active"] is True;assert stored["job_key"]=="example|legacy qa|";assert "priority_score" in stored;db.close()
+    path=tmp_path/"legacy.db";conn=sqlite3.connect(path);conn.execute("""CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""");conn.execute("INSERT INTO jobs(title,company,apply_url) VALUES(?,?,?)",("Legacy QA","Example","https://example.com/legacy"));conn.commit();conn.close();db=Database(path);stored=db.get_job(1);assert stored["is_active"] is True;assert stored["job_key"]=="example|legacy qa|";assert "priority_score" in stored;assert stored["follow_up_days"]==7;db.close()
