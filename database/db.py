@@ -1,5 +1,5 @@
 """SQLite persistence for discovered, matched and tracked jobs."""
-import json,sqlite3
+import json,re,sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 class Database:
@@ -10,22 +10,34 @@ class Database:
     def connect(self):return self.conn
     def execute(self,q,p=()):c=self.conn.cursor();c.execute(q,p);self.conn.commit();return c
     def fetchall(self,q,p=()):c=self.conn.cursor();c.execute(q,p);return c.fetchall()
+    @staticmethod
+    def _identity_text(value):return re.sub(r"[^a-z0-9]+"," ",str(value or "").lower()).strip()
+    @classmethod
+    def _job_key(cls,title,company,location=""):
+        """Stable cross-source identity used when ATS URLs differ for one vacancy."""
+        return "|".join((cls._identity_text(company),cls._identity_text(title),cls._identity_text(location)))
     def save_job(self,job,match=None):
-        d=self._job_dict(job);u=str(d.get("apply_url") or "").strip();t=str(d.get("title") or "").strip();co=str(d.get("company") or "").strip()
+        d=self._job_dict(job);u=str(d.get("apply_url") or "").strip();t=str(d.get("title") or "").strip();co=str(d.get("company") or "").strip();loc=str(d.get("location") or "").strip();platform=str(d.get("platform") or "unknown").strip().lower();key=self._job_key(t,co,loc)
         if not u:raise ValueError("Job apply_url is required")
         if not t:raise ValueError("Job title is required")
         if not co:raise ValueError("Job company is required")
-        match=match or {};lists={n:list(match.get(n) or []) for n in self.MATCH_LIST_COLUMNS};c=self.execute("""INSERT INTO jobs(title,company,location,apply_url,description,platform,match_score,matched_skills,missing_skills,required_skills,preferred_skills,general_skills,matched_required_skills,missing_required_skills,last_seen_at,is_active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,1) ON CONFLICT(apply_url) DO UPDATE SET title=excluded.title,company=excluded.company,location=excluded.location,description=excluded.description,platform=excluded.platform,match_score=excluded.match_score,matched_skills=excluded.matched_skills,missing_skills=excluded.missing_skills,required_skills=excluded.required_skills,preferred_skills=excluded.preferred_skills,general_skills=excluded.general_skills,matched_required_skills=excluded.matched_required_skills,missing_required_skills=excluded.missing_required_skills,last_seen_at=CURRENT_TIMESTAMP,is_active=1,updated_at=CURRENT_TIMESTAMP""",(t,co,str(d.get("location") or "").strip(),u,str(d.get("description") or "").strip(),str(d.get("platform") or "unknown").strip().lower(),float(match.get("score",0)),*(json.dumps(lists[n]) for n in self.MATCH_LIST_COLUMNS)))
-        if c.lastrowid:return int(c.lastrowid)
-        return int(self.conn.execute("SELECT id FROM jobs WHERE apply_url=?",(u,)).fetchone()["id"])
+        match=match or {};lists={n:list(match.get(n) or []) for n in self.MATCH_LIST_COLUMNS};values=(t,co,loc,u,platform,float(match.get("score",0)),str(d.get("description") or "").strip(),key,*(json.dumps(lists[n]) for n in self.MATCH_LIST_COLUMNS))
+        existing=self.conn.execute("SELECT id,apply_url,match_score FROM jobs WHERE apply_url=? OR (job_key=? AND job_key<>'') ORDER BY CASE WHEN apply_url=? THEN 0 ELSE 1 END,id LIMIT 1",(u,key,u)).fetchone()
+        if existing:
+            # Keep one record and all user tracking. Prefer the newest discovered URL;
+            # duplicate URLs from other sources are retained for lifecycle matching.
+            aliases={r["apply_url"] for r in self.conn.execute("SELECT apply_url FROM job_aliases WHERE job_id=?",(existing["id"],)).fetchall()};aliases.add(existing["apply_url"]);aliases.add(u)
+            self.execute("""UPDATE jobs SET title=?,company=?,location=?,apply_url=?,platform=?,match_score=?,description=?,job_key=?,matched_skills=?,missing_skills=?,required_skills=?,preferred_skills=?,general_skills=?,matched_required_skills=?,missing_required_skills=?,last_seen_at=CURRENT_TIMESTAMP,is_active=1,updated_at=CURRENT_TIMESTAMP WHERE id=?""",(*values,int(existing["id"])))
+            for alias in aliases:self.execute("INSERT OR IGNORE INTO job_aliases(job_id,apply_url) VALUES(?,?)",(int(existing["id"]),alias))
+            return int(existing["id"])
+        c=self.execute("""INSERT INTO jobs(title,company,location,apply_url,platform,match_score,description,job_key,matched_skills,missing_skills,required_skills,preferred_skills,general_skills,matched_required_skills,missing_required_skills,last_seen_at,is_active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,1)""",values);job_id=int(c.lastrowid);self.execute("INSERT OR IGNORE INTO job_aliases(job_id,apply_url) VALUES(?,?)",(job_id,u));return job_id
     def save_jobs(self,jobs:Iterable,matches=None):
         matches=matches or {};return [self.save_job(j,matches.get(str(self._job_dict(j).get("apply_url") or ""))) for j in jobs]
     def mark_missing_jobs_inactive(self,seen_apply_urls,platform=None):
-        """Mark jobs not seen in a successful scrape inactive while preserving history."""
         urls={str(u).strip() for u in (seen_apply_urls or []) if str(u).strip()};where="is_active=1";params=[]
         if platform is not None:where+=" AND platform=?";params.append(str(platform).strip().lower())
         if urls:
-            marks=','.join('?' for _ in urls);where+=f" AND apply_url NOT IN ({marks})";params.extend(sorted(urls))
+            marks=','.join('?' for _ in urls);where+=f" AND id NOT IN (SELECT job_id FROM job_aliases WHERE apply_url IN ({marks}))";params.extend(sorted(urls))
         c=self.execute(f"UPDATE jobs SET is_active=0,updated_at=CURRENT_TIMESTAMP WHERE {where}",tuple(params));return c.rowcount
     def update_application_status(self,job_id,status):
         s=str(status or "").strip().lower()
@@ -54,17 +66,22 @@ class Database:
         for s in self.APPLICATION_STATUSES:r[s]=int(r.get(s) or 0)
         r["response_rate"]=round((r["interview"]+r["offer"])/r["applied"]*100,1) if r["applied"] else 0.0;return r
     def get_job(self,job_id):
-        row=self.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone();return self._row_to_dict(row) if row else None
+        row=self.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone()
+        if not row:return None
+        result=self._row_to_dict(row);result["source_urls"]=[r["apply_url"] for r in self.conn.execute("SELECT apply_url FROM job_aliases WHERE job_id=? ORDER BY id",(job_id,)).fetchall()];return result
     def _require_job(self,job_id):
         if self.get_job(job_id) is None:raise KeyError(f"Job not found: {job_id}")
     def close(self):self.conn.close()
     def _create_schema(self):
-        self.conn.execute("""CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',required_skills TEXT NOT NULL DEFAULT '[]',preferred_skills TEXT NOT NULL DEFAULT '[]',general_skills TEXT NOT NULL DEFAULT '[]',matched_required_skills TEXT NOT NULL DEFAULT '[]',missing_required_skills TEXT NOT NULL DEFAULT '[]',application_status TEXT NOT NULL DEFAULT 'new',status_updated_at TEXT,is_saved INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',is_active INTEGER NOT NULL DEFAULT 1,last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""");self._migrate_schema();self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score DESC)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_application_status ON jobs(application_status)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_saved ON jobs(is_saved)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_active ON jobs(is_active)");self.conn.commit()
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',job_key TEXT NOT NULL DEFAULT '',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',required_skills TEXT NOT NULL DEFAULT '[]',preferred_skills TEXT NOT NULL DEFAULT '[]',general_skills TEXT NOT NULL DEFAULT '[]',matched_required_skills TEXT NOT NULL DEFAULT '[]',missing_required_skills TEXT NOT NULL DEFAULT '[]',application_status TEXT NOT NULL DEFAULT 'new',status_updated_at TEXT,is_saved INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',is_active INTEGER NOT NULL DEFAULT 1,last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""");self._migrate_schema();self.conn.execute("""CREATE TABLE IF NOT EXISTS job_aliases(id INTEGER PRIMARY KEY AUTOINCREMENT,job_id INTEGER NOT NULL,apply_url TEXT NOT NULL UNIQUE,FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)""");self._backfill_aliases();self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score DESC)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_application_status ON jobs(application_status)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_saved ON jobs(is_saved)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_active ON jobs(is_active)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_key ON jobs(job_key)");self.conn.commit()
     def _migrate_schema(self):
-        e={r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)").fetchall()};m={"required_skills":"TEXT NOT NULL DEFAULT '[]'","preferred_skills":"TEXT NOT NULL DEFAULT '[]'","general_skills":"TEXT NOT NULL DEFAULT '[]'","matched_required_skills":"TEXT NOT NULL DEFAULT '[]'","missing_required_skills":"TEXT NOT NULL DEFAULT '[]'","application_status":"TEXT NOT NULL DEFAULT 'new'","status_updated_at":"TEXT","is_saved":"INTEGER NOT NULL DEFAULT 0","notes":"TEXT NOT NULL DEFAULT ''","is_active":"INTEGER NOT NULL DEFAULT 1","last_seen_at":"TEXT"}
+        e={r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)").fetchall()};m={"required_skills":"TEXT NOT NULL DEFAULT '[]'","preferred_skills":"TEXT NOT NULL DEFAULT '[]'","general_skills":"TEXT NOT NULL DEFAULT '[]'","matched_required_skills":"TEXT NOT NULL DEFAULT '[]'","missing_required_skills":"TEXT NOT NULL DEFAULT '[]'","application_status":"TEXT NOT NULL DEFAULT 'new'","status_updated_at":"TEXT","is_saved":"INTEGER NOT NULL DEFAULT 0","notes":"TEXT NOT NULL DEFAULT ''","is_active":"INTEGER NOT NULL DEFAULT 1","last_seen_at":"TEXT","job_key":"TEXT NOT NULL DEFAULT ''"}
         for c,d in m.items():
             if c not in e:self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {c} {d}")
         self.conn.execute("UPDATE jobs SET last_seen_at=COALESCE(last_seen_at,updated_at,discovered_at,CURRENT_TIMESTAMP)")
+        for row in self.conn.execute("SELECT id,title,company,location FROM jobs WHERE job_key='' OR job_key IS NULL").fetchall():self.conn.execute("UPDATE jobs SET job_key=? WHERE id=?",(self._job_key(row["title"],row["company"],row["location"]),row["id"]))
+    def _backfill_aliases(self):
+        for row in self.conn.execute("SELECT id,apply_url FROM jobs").fetchall():self.conn.execute("INSERT OR IGNORE INTO job_aliases(job_id,apply_url) VALUES(?,?)",(row["id"],row["apply_url"]))
     @staticmethod
     def _job_dict(j):
         if isinstance(j,dict):return j
