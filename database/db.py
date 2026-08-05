@@ -1,7 +1,7 @@
 """SQLite persistence for discovered, matched and tracked jobs."""
 import json,re,sqlite3
 from collections.abc import Iterable
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
 from pathlib import Path
 class Database:
     MATCH_LIST_COLUMNS=("matched_skills","missing_skills","required_skills","preferred_skills","general_skills","matched_required_skills","missing_required_skills")
@@ -28,6 +28,13 @@ class Database:
         if score>=65:return "high"
         if score>=45:return "medium"
         return "low"
+    @staticmethod
+    def _follow_up(row):
+        status=str(row.get("application_status") or "new").lower();applied=row.get("applied_at");days=max(1,int(row.get("follow_up_days") or 7));done=bool(row.get("follow_up_completed",0))
+        if status!="applied" or not applied or done:return {"follow_up_status":"none","follow_up_due_at":None,"follow_up_days_remaining":None}
+        try:dt=datetime.fromisoformat(str(applied).replace("Z","+00:00"));dt=dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc);due=dt+timedelta(days=days);remaining=(due-datetime.now(timezone.utc)).total_seconds()/86400
+        except (TypeError,ValueError):return {"follow_up_status":"none","follow_up_due_at":None,"follow_up_days_remaining":None}
+        state="overdue" if remaining<0 else ("due_soon" if remaining<=2 else "scheduled");return {"follow_up_status":state,"follow_up_due_at":due.isoformat(),"follow_up_days_remaining":max(0,int(remaining+0.999))}
     def save_job(self,job,match=None):
         d=self._job_dict(job);u=str(d.get("apply_url") or "").strip();t=str(d.get("title") or "").strip();co=str(d.get("company") or "").strip();loc=str(d.get("location") or "").strip();platform=str(d.get("platform") or "unknown").strip().lower();key=self._job_key(t,co,loc)
         if not u:raise ValueError("Job apply_url is required")
@@ -40,8 +47,7 @@ class Database:
             return int(existing["id"])
         c=self.execute("""INSERT INTO jobs(title,company,location,apply_url,platform,match_score,description,job_key,matched_skills,missing_skills,required_skills,preferred_skills,general_skills,matched_required_skills,missing_required_skills,last_seen_at,is_active) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,1)""",values);job_id=int(c.lastrowid);self.execute("INSERT OR IGNORE INTO job_aliases(job_id,apply_url) VALUES(?,?)",(job_id,u));return job_id
     def save_jobs(self,jobs:Iterable,matches=None):matches=matches or {};return [self.save_job(j,matches.get(str(self._job_dict(j).get("apply_url") or ""))) for j in jobs]
-    def mark_job_notified(self,job_id,priority_label):
-        self._require_job(job_id);self.execute("UPDATE jobs SET last_notified_at=CURRENT_TIMESTAMP,last_notified_priority=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(str(priority_label or "").strip().lower(),int(job_id)));return self.get_job(job_id)
+    def mark_job_notified(self,job_id,priority_label):self._require_job(job_id);self.execute("UPDATE jobs SET last_notified_at=CURRENT_TIMESTAMP,last_notified_priority=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(str(priority_label or "").strip().lower(),int(job_id)));return self.get_job(job_id)
     def mark_missing_jobs_inactive(self,seen_apply_urls,platform=None):
         urls={str(u).strip() for u in (seen_apply_urls or []) if str(u).strip()};where="is_active=1";params=[]
         if platform is not None:where+=" AND platform=?";params.append(str(platform).strip().lower())
@@ -50,7 +56,23 @@ class Database:
     def update_application_status(self,job_id,status):
         s=str(status or "").strip().lower()
         if s not in self.APPLICATION_STATUSES:raise ValueError(f"Invalid application status: {status}")
-        self._require_job(job_id);self.execute("UPDATE jobs SET application_status=?,status_updated_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",(s,int(job_id)));return self.get_job(job_id)
+        self._require_job(job_id)
+        if s=="applied":self.execute("UPDATE jobs SET application_status=?,status_updated_at=CURRENT_TIMESTAMP,applied_at=COALESCE(applied_at,CURRENT_TIMESTAMP),follow_up_completed=0,updated_at=CURRENT_TIMESTAMP WHERE id=?",(s,int(job_id)))
+        else:self.execute("UPDATE jobs SET application_status=?,status_updated_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",(s,int(job_id)))
+        return self.get_job(job_id)
+    def update_follow_up(self,job_id,days=None,completed=None):
+        job=self.get_job(job_id)
+        if job is None:raise KeyError(f"Job not found: {job_id}")
+        sets=[];params=[]
+        if days is not None:
+            days=int(days)
+            if not 1<=days<=90:raise ValueError("follow_up_days must be between 1 and 90")
+            sets.append("follow_up_days=?");params.append(days)
+        if completed is not None:
+            if not isinstance(completed,bool):raise ValueError("completed must be a boolean")
+            sets.append("follow_up_completed=?");params.append(1 if completed else 0)
+        if not sets:raise ValueError("follow_up_days or completed is required")
+        sets.append("updated_at=CURRENT_TIMESTAMP");params.append(int(job_id));self.execute(f"UPDATE jobs SET {','.join(sets)} WHERE id=?",tuple(params));return self.get_job(job_id)
     def update_job_tracking(self,job_id,saved=None,notes=None):
         self._require_job(job_id);sets=[];params=[]
         if saved is not None:sets.append("is_saved=?");params.append(1 if bool(saved) else 0)
@@ -60,7 +82,7 @@ class Database:
             sets.append("notes=?");params.append(notes)
         if not sets:raise ValueError("saved or notes is required")
         sets.append("updated_at=CURRENT_TIMESTAMP");params.append(int(job_id));self.execute(f"UPDATE jobs SET {','.join(sets)} WHERE id=?",tuple(params));return self.get_job(job_id)
-    def list_jobs(self,min_score=0.0,limit=100,status=None,saved=None,active=None):
+    def list_jobs(self,min_score=0.0,limit=100,status=None,saved=None,active=None,follow_up=None):
         params=[float(min_score)];where="match_score >= ?"
         if status is not None:
             s=str(status).strip().lower()
@@ -68,11 +90,16 @@ class Database:
             where+=" AND application_status=?";params.append(s)
         if saved is not None:where+=" AND is_saved=?";params.append(1 if saved else 0)
         if active is not None:where+=" AND is_active=?";params.append(1 if active else 0)
-        rows=[self._row_to_dict(r) for r in self.fetchall(f"SELECT * FROM jobs WHERE {where}",tuple(params))];rows.sort(key=lambda r:(r["priority_score"],r["match_score"]),reverse=True);return rows[:int(limit)]
+        rows=[self._row_to_dict(r) for r in self.fetchall(f"SELECT * FROM jobs WHERE {where}",tuple(params))]
+        if follow_up is not None:
+            allowed={"scheduled","due_soon","overdue","none"}
+            if follow_up not in allowed:raise ValueError("follow_up must be scheduled, due_soon, overdue or none")
+            rows=[r for r in rows if r["follow_up_status"]==follow_up]
+        rows.sort(key=lambda r:(r["priority_score"],r["match_score"]),reverse=True);return rows[:int(limit)]
     def get_analytics(self):
         r=dict(self.conn.execute("""SELECT COUNT(*) total,SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END) active,SUM(CASE WHEN is_active=0 THEN 1 ELSE 0 END) inactive,SUM(CASE WHEN date(discovered_at)=date('now') THEN 1 ELSE 0 END) new_today,COALESCE(ROUND(AVG(CASE WHEN is_active=1 THEN match_score END),1),0) average_match_score,SUM(CASE WHEN is_saved=1 THEN 1 ELSE 0 END) saved,SUM(CASE WHEN application_status='new' THEN 1 ELSE 0 END) new,SUM(CASE WHEN application_status='viewed' THEN 1 ELSE 0 END) viewed,SUM(CASE WHEN application_status='applied' THEN 1 ELSE 0 END) applied,SUM(CASE WHEN application_status='interview' THEN 1 ELSE 0 END) interview,SUM(CASE WHEN application_status='rejected' THEN 1 ELSE 0 END) rejected,SUM(CASE WHEN application_status='offer' THEN 1 ELSE 0 END) offer FROM jobs""").fetchone());r={k:(int(v or 0) if k!="average_match_score" else float(v or 0)) for k,v in r.items()}
         for s in self.APPLICATION_STATUSES:r[s]=int(r.get(s) or 0)
-        r["response_rate"]=round((r["interview"]+r["offer"])/r["applied"]*100,1) if r["applied"] else 0.0;return r
+        follow=[self._row_to_dict(x) for x in self.fetchall("SELECT * FROM jobs WHERE application_status='applied' AND follow_up_completed=0")];r["follow_up_due"]=sum(1 for x in follow if x["follow_up_status"] in ("due_soon","overdue"));r["response_rate"]=round((r["interview"]+r["offer"])/r["applied"]*100,1) if r["applied"] else 0.0;return r
     def get_job(self,job_id):
         row=self.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone()
         if not row:return None
@@ -81,9 +108,9 @@ class Database:
         if self.get_job(job_id) is None:raise KeyError(f"Job not found: {job_id}")
     def close(self):self.conn.close()
     def _create_schema(self):
-        self.conn.execute("""CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',job_key TEXT NOT NULL DEFAULT '',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',required_skills TEXT NOT NULL DEFAULT '[]',preferred_skills TEXT NOT NULL DEFAULT '[]',general_skills TEXT NOT NULL DEFAULT '[]',matched_required_skills TEXT NOT NULL DEFAULT '[]',missing_required_skills TEXT NOT NULL DEFAULT '[]',application_status TEXT NOT NULL DEFAULT 'new',status_updated_at TEXT,is_saved INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',is_active INTEGER NOT NULL DEFAULT 1,last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,last_notified_at TEXT,last_notified_priority TEXT NOT NULL DEFAULT '',discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""");self._migrate_schema();self.conn.execute("""CREATE TABLE IF NOT EXISTS job_aliases(id INTEGER PRIMARY KEY AUTOINCREMENT,job_id INTEGER NOT NULL,apply_url TEXT NOT NULL UNIQUE,FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)""");self._backfill_aliases();self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score DESC)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_application_status ON jobs(application_status)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_saved ON jobs(is_saved)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_active ON jobs(is_active)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_key ON jobs(job_key)");self.conn.commit()
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT NULL,company TEXT NOT NULL,location TEXT NOT NULL DEFAULT '',apply_url TEXT NOT NULL UNIQUE,description TEXT NOT NULL DEFAULT '',platform TEXT NOT NULL DEFAULT 'unknown',job_key TEXT NOT NULL DEFAULT '',match_score REAL NOT NULL DEFAULT 0,matched_skills TEXT NOT NULL DEFAULT '[]',missing_skills TEXT NOT NULL DEFAULT '[]',required_skills TEXT NOT NULL DEFAULT '[]',preferred_skills TEXT NOT NULL DEFAULT '[]',general_skills TEXT NOT NULL DEFAULT '[]',matched_required_skills TEXT NOT NULL DEFAULT '[]',missing_required_skills TEXT NOT NULL DEFAULT '[]',application_status TEXT NOT NULL DEFAULT 'new',status_updated_at TEXT,applied_at TEXT,follow_up_days INTEGER NOT NULL DEFAULT 7,follow_up_completed INTEGER NOT NULL DEFAULT 0,is_saved INTEGER NOT NULL DEFAULT 0,notes TEXT NOT NULL DEFAULT '',is_active INTEGER NOT NULL DEFAULT 1,last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,last_notified_at TEXT,last_notified_priority TEXT NOT NULL DEFAULT '',discovered_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)""");self._migrate_schema();self.conn.execute("""CREATE TABLE IF NOT EXISTS job_aliases(id INTEGER PRIMARY KEY AUTOINCREMENT,job_id INTEGER NOT NULL,apply_url TEXT NOT NULL UNIQUE,FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE)""");self._backfill_aliases();self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_match_score ON jobs(match_score DESC)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_application_status ON jobs(application_status)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_saved ON jobs(is_saved)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_is_active ON jobs(is_active)");self.conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_job_key ON jobs(job_key)");self.conn.commit()
     def _migrate_schema(self):
-        e={r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)").fetchall()};m={"required_skills":"TEXT NOT NULL DEFAULT '[]'","preferred_skills":"TEXT NOT NULL DEFAULT '[]'","general_skills":"TEXT NOT NULL DEFAULT '[]'","matched_required_skills":"TEXT NOT NULL DEFAULT '[]'","missing_required_skills":"TEXT NOT NULL DEFAULT '[]'","application_status":"TEXT NOT NULL DEFAULT 'new'","status_updated_at":"TEXT","is_saved":"INTEGER NOT NULL DEFAULT 0","notes":"TEXT NOT NULL DEFAULT ''","is_active":"INTEGER NOT NULL DEFAULT 1","last_seen_at":"TEXT","job_key":"TEXT NOT NULL DEFAULT ''","last_notified_at":"TEXT","last_notified_priority":"TEXT NOT NULL DEFAULT ''"}
+        e={r["name"] for r in self.conn.execute("PRAGMA table_info(jobs)").fetchall()};m={"required_skills":"TEXT NOT NULL DEFAULT '[]'","preferred_skills":"TEXT NOT NULL DEFAULT '[]'","general_skills":"TEXT NOT NULL DEFAULT '[]'","matched_required_skills":"TEXT NOT NULL DEFAULT '[]'","missing_required_skills":"TEXT NOT NULL DEFAULT '[]'","application_status":"TEXT NOT NULL DEFAULT 'new'","status_updated_at":"TEXT","applied_at":"TEXT","follow_up_days":"INTEGER NOT NULL DEFAULT 7","follow_up_completed":"INTEGER NOT NULL DEFAULT 0","is_saved":"INTEGER NOT NULL DEFAULT 0","notes":"TEXT NOT NULL DEFAULT ''","is_active":"INTEGER NOT NULL DEFAULT 1","last_seen_at":"TEXT","job_key":"TEXT NOT NULL DEFAULT ''","last_notified_at":"TEXT","last_notified_priority":"TEXT NOT NULL DEFAULT ''"}
         for c,d in m.items():
             if c not in e:self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {c} {d}")
         self.conn.execute("UPDATE jobs SET last_seen_at=COALESCE(last_seen_at,updated_at,discovered_at,CURRENT_TIMESTAMP)")
@@ -99,4 +126,4 @@ class Database:
     def _row_to_dict(cls,row):
         r=dict(row)
         for c in cls.MATCH_LIST_COLUMNS:r[c]=json.loads(r.get(c) or "[]")
-        r["is_saved"]=bool(r.get("is_saved",0));r["is_active"]=bool(r.get("is_active",1));r["priority_score"]=cls._priority(r);r["priority_label"]=cls._priority_label(r["priority_score"]);return r
+        r["is_saved"]=bool(r.get("is_saved",0));r["is_active"]=bool(r.get("is_active",1));r["follow_up_completed"]=bool(r.get("follow_up_completed",0));r.update(cls._follow_up(r));r["priority_score"]=cls._priority(r);r["priority_label"]=cls._priority_label(r["priority_score"]);return r
