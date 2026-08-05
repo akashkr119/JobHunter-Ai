@@ -6,6 +6,7 @@ from crawler.scraper_factory import ScraperFactory
 from database.db import Database
 from matcher.skill_matcher import SkillMatcher
 from matcher.job_preferences import JobPreferences
+from matcher.recommendation_ranker import RecommendationRanker
 from notifier.notifier import Notifier
 class Scheduler:
     """Schedule and execute the JobHunter discovery pipeline."""
@@ -46,6 +47,12 @@ class Scheduler:
         d=self.database._job_dict(job);url=str(d.get("apply_url") or "").strip();key=self.database._job_key(d.get("title"),d.get("company"),d.get("location"));row=self.database.conn.execute("SELECT id FROM jobs WHERE apply_url=? OR (job_key=? AND job_key<>'') LIMIT 1",(url,key)).fetchone();return self.database.get_job(row["id"]) if row else None
     def _should_notify(self,job,previous,notification):
         if not job or not job.get("is_active",True) or job.get("application_status") not in ("new","viewed"):return False
+        minimum_score=notification.get("minimum_recommendation_score")
+        if minimum_score is not None:
+            try:minimum_score=float(minimum_score)
+            except (TypeError,ValueError):raise ValueError("minimum_recommendation_score must be between 0 and 100")
+            if not 0<=minimum_score<=100:raise ValueError("minimum_recommendation_score must be between 0 and 100")
+            if RecommendationRanker.score(job)["recommendation_score"]<minimum_score:return False
         minimum=str(notification.get("minimum_priority","apply_now")).strip().lower()
         if minimum not in self.ALERT_PRIORITIES:raise ValueError("minimum_priority must be apply_now, high, medium or low")
         current=self.ALERT_PRIORITIES.get(job.get("priority_label"),0)
@@ -65,8 +72,8 @@ class Scheduler:
         return ""
     def _notify(self,job,match:dict,notification:dict,stored:dict|None=None)->dict:
         if not self.notifier:raise RuntimeError("Notifier is not configured")
-        config=dict(notification);config.pop("minimum_priority",None);channel=config.pop("channel","");priority=(stored or {}).get("priority_label","high").replace("_"," ").title();message=self.notifier.format_job_alert(job,match,priority=priority,priority_score=(stored or {}).get("priority_score"))
-        if str(channel).strip().lower()=="email":config.setdefault("subject",f"JobHunter {priority}: {match['score']:.0f}% match");config.setdefault("body",message)
+        config=dict(notification);config.pop("minimum_priority",None);config.pop("minimum_recommendation_score",None);channel=config.pop("channel","");priority=(stored or {}).get("priority_label","high").replace("_"," ").title();recommendation=RecommendationRanker.score(stored or {"match_score":match.get("score",0),"preference_score":match.get("preference_score",100)});message=self.notifier.format_job_alert(job,match,priority=priority,priority_score=(stored or {}).get("priority_score"));message=f"{message}\nRecommendation: {recommendation['recommendation_score']:.1f}/100 ({recommendation['recommendation_label'].replace('_',' ').title()})"
+        if str(channel).strip().lower()=="email":config.setdefault("subject",f"JobHunter {recommendation['recommendation_label'].replace('_',' ').title()}: {recommendation['recommendation_score']:.0f}% recommendation");config.setdefault("body",message)
         else:config.setdefault("message",message)
         return self.notifier.send(channel,**config)
     def start(self)->None:self._scheduler.start()
