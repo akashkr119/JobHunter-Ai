@@ -11,7 +11,7 @@ def env_keys(path):
     return keys
 
 def test_release_files_exist():
-    for relative in ("README.md","docs/PRODUCTION.md",".env.example","requirements.txt","pytest.ini","main.py","app.py"):
+    for relative in ("README.md","CHANGELOG.md","docs/PRODUCTION.md",".env.example","requirements.txt","pytest.ini","main.py","app.py"):
         assert (ROOT/relative).is_file(),f"Missing V1 release file: {relative}"
 
 def test_env_example_covers_production_settings():
@@ -27,8 +27,11 @@ def test_env_example_contains_no_real_secrets():
 def test_gitignore_protects_runtime_secrets_and_state():
     text=(ROOT/".gitignore").read_text(encoding="utf-8").splitlines();rules={line.strip() for line in text if line.strip() and not line.lstrip().startswith("#")};assert ".env" in rules;assert "*.db" in rules;assert "logs/" in rules
 
-def test_readme_marks_only_final_v1_milestone_pending():
-    text=(ROOT/"README.md").read_text(encoding="utf-8");assert "| 5 | Automated Production Runner | ✅ Complete |" in text;assert "| 6 | V1 Hardening & Release | ⏳ Next |" in text
+def test_readme_marks_final_v1_milestone_in_release_validation():
+    text=(ROOT/"README.md").read_text(encoding="utf-8");assert "| 5 | Automated Production Runner | ✅ Complete |" in text;assert "| 6 | V1 Hardening & Release | 🧪 Release validation |" in text;assert "After both pass, the repository can be tagged `v1.0.0`." in text
+
+def test_changelog_has_v1_release_gate():
+    text=(ROOT/"CHANGELOG.md").read_text(encoding="utf-8");assert "## [1.0.0] - Unreleased" in text;assert "Tag `v1.0.0` only after the full CI suite passes" in text
 
 def test_production_docs_cover_safety_and_operations():
     text=(ROOT/"docs/PRODUCTION.md").read_text(encoding="utf-8").lower()
