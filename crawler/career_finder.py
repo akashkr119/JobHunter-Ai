@@ -7,7 +7,9 @@ from config.settings import REQUEST_TIMEOUT,USER_AGENT
 
 class CareerFinder:
     """Discover career pages, including one-hop vacancy/search destinations."""
-    COMMON_PATHS=("careers","jobs","careers/jobs","career","join-us","joinus","work-with-us","work-withus","opportunities","careers/search","jobs/search")
+    # Keep fallback probing deliberately small. The previous 11-path list caused
+    # every company to generate a long sequence of predictable 404/timeout calls.
+    COMMON_PATHS=("careers","jobs","careers/jobs","join-us")
     CAREER_KEYWORDS=("career","careers","job","jobs","join us","join-us","joinus","work with us","work-with-us","opportunities","open positions","open roles","vacancies")
     DEEP_KEYWORDS=("find a job","find jobs","search jobs","search for jobs","current openings","view openings","view all open positions","open positions","job openings","vacancies","apply now")
     MAX_LANDING_PAGES=5
