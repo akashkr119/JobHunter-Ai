@@ -3,6 +3,7 @@
 import argparse
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, quote_plus, urlparse
 
@@ -25,15 +26,22 @@ SEARCH_ENGINES = (
     "https://www.google.com/search?q=",
     "https://html.duckduckgo.com/html/?q=",
 )
-BLOCKED_SEARCH_HOSTS = {
+BLOCKED_HOSTS = {
     "google.com", "www.google.com", "duckduckgo.com", "html.duckduckgo.com",
     "linkedin.com", "www.linkedin.com", "facebook.com", "www.facebook.com",
     "instagram.com", "www.instagram.com", "youtube.com", "www.youtube.com",
     "wikipedia.org", "www.wikipedia.org", "twitter.com", "x.com",
+    "indeed.com", "www.indeed.com", "naukri.com", "www.naukri.com",
+    "glassdoor.com", "www.glassdoor.com", "ziprecruiter.com", "www.ziprecruiter.com",
 }
+ATS_HOSTS = (
+    "greenhouse.io", "lever.co", "myworkdayjobs.com", "smartrecruiters.com",
+    "ashbyhq.com", "successfactors.com", "taleo.net", "icims.com", "jobvite.com",
+)
 CAREER_TERMS = (
     "career", "careers", "jobs", "job", "join-us", "join us", "opportunities",
     "work-with-us", "work with us", "vacancies", "open-positions", "open positions",
+    "job-search", "jobsearch", "employment", "talent",
 )
 
 
@@ -53,7 +61,7 @@ def load_resume_skills(settings: Settings) -> list[str]:
 
 
 def _search_links(html: str) -> list[tuple[str, str]]:
-    """Extract ordinary result links from Google/DuckDuckGo HTML."""
+    """Extract result URLs and visible titles from common search-engine HTML."""
     soup = BeautifulSoup(html, "html.parser")
     results = []
     seen = set()
@@ -71,79 +79,154 @@ def _search_links(html: str) -> list[tuple[str, str]]:
     return results
 
 
-def _blocked_search_host(url: str) -> bool:
-    host = urlparse(url).netloc.lower().split(":", 1)[0]
-    return host in BLOCKED_SEARCH_HOSTS or any(host.endswith("." + h) for h in BLOCKED_SEARCH_HOSTS)
+def _host(url: str) -> str:
+    return urlparse(url).netloc.lower().split(":", 1)[0].removeprefix("www.")
 
 
-def _resolve_company_career_url(company: str) -> str | None:
-    """Best-effort bounded search for a company's official career/ATS page."""
-    query = quote_plus(f'"{company}" careers jobs')
+def _blocked_host(url: str) -> bool:
+    host = _host(url)
+    return host in {h.removeprefix("www.") for h in BLOCKED_HOSTS}
+
+
+def _is_ats(url: str) -> bool:
+    host = _host(url)
+    return any(host == ats or host.endswith("." + ats) for ats in ATS_HOSTS)
+
+
+def _candidate_score(url: str, title: str, company: str) -> int:
+    """Score search results so job boards never win over official/ATS pages."""
+    if _blocked_host(url):
+        return -1000
+    host = _host(url)
+    path = urlparse(url).path.lower()
+    haystack = f"{url} {title}".lower()
+    score = 0
+    if _is_ats(url):
+        score += 100
+    if any(term in path for term in CAREER_TERMS):
+        score += 35
+    if any(term in haystack for term in CAREER_TERMS):
+        score += 20
+    company_tokens = [token.lower() for token in company.replace("&", " ").split() if len(token) >= 4]
+    score += min(30, sum(5 for token in company_tokens if token in host or token in title.lower()))
+    if host.endswith(".gov"):
+        score -= 50
+    return score
+
+
+def _extract_official_website(url: str) -> str | None:
+    """Return the company origin for an official career URL, not for an ATS URL."""
+    if _is_ats(url):
+        return None
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
+def _resolve_company_career(company: str) -> dict:
+    """Find a likely official career page or ATS page for a company name.
+
+    This is deliberately bounded: two search engines, two queries, short
+    connect/read timeouts, and at most one best result. The result is later
+    persisted in the user's Excel file so future runs do not search again.
+    """
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36"})
-    for engine in SEARCH_ENGINES:
-        try:
-            response = session.get(engine + query, timeout=(4, 8))
-            response.raise_for_status()
-        except requests.RequestException:
-            continue
-        for href, text in _search_links(response.text):
-            if _blocked_search_host(href):
-                continue
-            haystack = f"{href} {text}".lower()
-            if not any(term in haystack for term in CAREER_TERMS):
-                continue
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "Chrome/151 Safari/537.36"
+    })
+    candidates: list[tuple[int, str, str]] = []
+    queries = (f'"{company}" careers', f'"{company}" jobs')
+    for raw_query in queries:
+        query = quote_plus(raw_query)
+        for engine in SEARCH_ENGINES:
             try:
-                parsed = urlparse(href)
-                if parsed.scheme in {"http", "https"} and parsed.netloc:
-                    return href.rstrip("/")
-            except ValueError:
+                response = session.get(engine + query, timeout=(3, 7))
+                response.raise_for_status()
+            except requests.RequestException:
                 continue
-    return None
+            for href, title in _search_links(response.text):
+                score = _candidate_score(href, title, company)
+                if score > 0:
+                    candidates.append((score, href.rstrip("/"), title))
+            if candidates:
+                break
+        if candidates:
+            # The first query is preferable; don't waste time on broad searches
+            # once we have a credible result.
+            break
+
+    if not candidates:
+        return {"website": None, "career_url": None, "status": "Not found"}
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    score, url, _ = candidates[0]
+    if score < 35:
+        return {"website": None, "career_url": None, "status": "Low confidence"}
+    return {
+        "website": _extract_official_website(url),
+        "career_url": url,
+        "status": "Found" if score >= 80 else "Found - verify",
+    }
 
 
 def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
-    """Resolve career URLs from structured or company-name-only Excel input."""
-    targets = CompanyLoader().load_targets(excel_path)
+    """Resolve career URLs and persist them into the same Excel workbook.
+
+    Supported input formats:
+      1. Company Name only — automatic career-page discovery is performed and
+         Website/Career URL/Discovery Status/Last Checked columns are added.
+      2. Company + Website — career discovery uses the supplied website.
+      3. Company + Career URL — the supplied URL is used as-is.
+
+    Once a Career URL exists in the workbook it is reused, so every scheduled
+    run can go directly to the company's career source instead of rediscovering it.
+    """
+    loader = CompanyLoader()
+    targets = loader.load_targets(excel_path)
     career_finder = CareerFinder()
     website_finder = WebsiteFinder()
-    urls = []
+    urls: list[str] = []
     seen = set()
-    company_only = [t for t in targets if not t.get("career_url") and not t.get("website")]
+    results: dict[str, dict] = {}
+    company_only = [target for target in targets if not target.get("career_url") and not target.get("website")]
 
     if company_only:
-        print(f"[DISCOVERY] {len(company_only)} company names have no URL; resolving career pages via bounded search...", flush=True)
-        with ThreadPoolExecutor(max_workers=8, thread_name_prefix="company-search") as pool:
-            futures = {pool.submit(_resolve_company_career_url, t["company"]): t["company"] for t in company_only}
-            resolved = {}
+        print(f"[DISCOVERY] {len(company_only)} companies have no URL. Finding career pages automatically...", flush=True)
+        with ThreadPoolExecutor(max_workers=8, thread_name_prefix="career-discovery") as pool:
+            futures = {pool.submit(_resolve_company_career, target["company"]): target["company"] for target in company_only}
             completed = 0
             for future in as_completed(futures):
                 company = futures[future]
                 completed += 1
                 try:
-                    resolved[company] = future.result()
+                    result = future.result()
                 except Exception as exc:
-                    resolved[company] = None
-                    logging.getLogger(__name__).warning("Career search failed for %s: %s", company, exc)
+                    result = {"website": None, "career_url": None, "status": f"Error: {type(exc).__name__}"}
+                    logging.getLogger(__name__).warning("Career discovery failed for %s: %s", company, exc)
+                result["checked_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                results[company] = result
                 if completed % 10 == 0 or completed == len(futures):
-                    found = sum(1 for value in resolved.values() if value)
-                    print(f"[DISCOVERY] searched {completed}/{len(futures)} companies; career URLs found={found}", flush=True)
-    else:
-        resolved = {}
+                    found = sum(bool(item.get("career_url")) for item in results.values())
+                    print(f"[DISCOVERY] {completed}/{len(futures)} checked; career URLs found={found}", flush=True)
+        loader.update_discovery_results(excel_path, results)
+        print(f"[DISCOVERY] Excel updated: {excel_path}", flush=True)
 
     for target in targets:
-        career_url = target.get("career_url")
+        company = target["company"]
+        career_url = target.get("career_url") or results.get(company, {}).get("career_url")
+        website = target.get("website") or results.get(company, {}).get("website")
         if career_url:
             candidates = [website_finder.normalize_url(career_url)]
-        elif target.get("website"):
-            candidates = career_finder.find(
-                website_finder.find(target["company"], target["website"]),
-                discover=discover,
-            )
-        elif resolved.get(target["company"]):
-            # A search result is already a career/ATS destination; don't scrape
-            # the company homepage just to rediscover the same link.
-            candidates = [website_finder.normalize_url(resolved[target["company"]])]
+        elif website:
+            candidates = career_finder.find(website_finder.normalize_url(website), discover=discover)
+            # Persist discovered career destinations for the next run.
+            if candidates:
+                results.setdefault(company, {})["career_url"] = candidates[0]
+                results.setdefault(company, {})["website"] = website
+                results.setdefault(company, {})["status"] = "Found"
+                results.setdefault(company, {})["checked_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         else:
             candidates = []
 
@@ -151,6 +234,10 @@ def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
             if url not in seen:
                 seen.add(url)
                 urls.append(url)
+
+    # Also persist career URLs discovered from supplied Website columns.
+    if results and not company_only:
+        loader.update_discovery_results(excel_path, results)
     return urls
 
 
@@ -160,7 +247,7 @@ def validate_startup(career_urls: list[str], settings: Settings) -> None:
     if not resume.is_file():
         raise ValueError(f"Resume file not found: {resume}")
     if not career_urls:
-        raise ValueError("No career URLs could be resolved from the supplied Excel file. Add a 'Website' or 'Career URL' column, or use company names that have public career pages.")
+        raise ValueError("No career URLs could be resolved from the supplied Excel file. Check the Discovery Status column in the workbook.")
     for url in career_urls:
         parsed = urlparse(str(url).strip())
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -194,8 +281,8 @@ def run_scheduled(career_urls: list[str], settings: Settings) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="JobHunter AI job discovery pipeline")
     parser.add_argument("career_urls", nargs="*", help="Company career/ATS URLs to scan")
-    parser.add_argument("--companies", help="Excel file containing Company, Website and/or Career URL columns")
-    parser.add_argument("--no-discovery", action="store_true", help="Do not fetch company homepages; company-only Excel inputs still use search-engine career resolution")
+    parser.add_argument("--companies", help="Excel file containing Company Name, optionally Website/Career URL")
+    parser.add_argument("--no-discovery", action="store_true", help="Skip homepage deep discovery when Website is supplied; company-name-only Excel still performs required career search")
     parser.add_argument("--scheduled", action="store_true", help="Run continuously using the production runner and JOBHUNTER_SCHEDULER_HOURS")
     parser.add_argument("--env-file", default=None, help="Optional path to a .env configuration file")
     return parser.parse_args()
