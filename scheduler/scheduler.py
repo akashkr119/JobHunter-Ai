@@ -1,5 +1,6 @@
 """Scheduling and pipeline orchestration utilities for JobHunter AI."""
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor,as_completed
 from urllib.parse import urlparse
 from apscheduler.schedulers.blocking import BlockingScheduler
 from crawler.scraper_factory import ScraperFactory
@@ -11,19 +12,30 @@ from notifier.notifier import Notifier
 class Scheduler:
     """Schedule and execute the JobHunter discovery pipeline."""
     ALERT_PRIORITIES={"apply_now":3,"high":2,"medium":1,"low":0}
+    MAX_SCRAPE_WORKERS=8
     def __init__(self,scraper_factory:ScraperFactory|None=None,matcher:SkillMatcher|None=None,database:Database|None=None,notifier:Notifier|None=None)->None:
         self._scheduler=BlockingScheduler();self.scraper_factory=scraper_factory or ScraperFactory();self.matcher=matcher or SkillMatcher();self.database=database or Database();self.notifier=notifier
     def add_job(self,func,hours:int=1,**kwargs):
         if hours<=0:raise ValueError("hours must be greater than zero")
         return self._scheduler.add_job(func,trigger="interval",hours=hours,kwargs=kwargs or None)
     def add_pipeline_job(self,career_urls:Iterable[str],resume_skills:Iterable[str],hours:int=1,min_score:float=0.0,notification:dict|None=None,preferences:JobPreferences|dict|None=None):return self.add_job(self.run_pipeline,hours=hours,career_urls=tuple(career_urls),resume_skills=tuple(resume_skills),min_score=min_score,notification=notification,preferences=preferences)
+    def _scrape_one(self,career_url:str)->tuple[str,list,Exception|None]:
+        try:return career_url,self.scraper_factory.scrape(career_url),None
+        except Exception as exc:return career_url,[],exc
     def run_pipeline(self,career_urls:Iterable[str],resume_skills:Iterable[str],min_score:float=0.0,company:str="",notification:dict|None=None,preferences:JobPreferences|dict|None=None)->dict:
         if not 0<=float(min_score)<=100:raise ValueError("min_score must be between 0 and 100")
         prefs=preferences if isinstance(preferences,JobPreferences) else JobPreferences.from_dict(preferences);skills=tuple(resume_skills);summary={"sources":0,"jobs_found":0,"jobs_saved":0,"jobs_skipped":0,"jobs_preference_excluded":0,"jobs_expired":0,"notifications_sent":0,"notifications_suppressed":0,"errors":[]}
-        for career_url in career_urls:
-            summary["sources"]+=1
-            try:jobs=self.scraper_factory.scrape(career_url,company=company)
-            except Exception as exc:summary["errors"].append({"career_url":career_url,"stage":"scrape","error":str(exc)});continue
+        urls=tuple(career_urls);summary["sources"]=len(urls)
+        # Network-bound scraping is performed concurrently so one slow company
+        # cannot block every other company. Database writes remain sequential.
+        scraped=[]
+        with ThreadPoolExecutor(max_workers=min(self.MAX_SCRAPE_WORKERS,max(1,len(urls))),thread_name_prefix="job-scraper") as pool:
+            futures=[pool.submit(self._scrape_one,url) for url in urls]
+            for future in as_completed(futures):scraped.append(future.result())
+        scraped_by_url={url:(jobs,error) for url,jobs,error in scraped}
+        for career_url in urls:
+            jobs,error=scraped_by_url.get(career_url,([],RuntimeError("scrape result missing")))
+            if error is not None:summary["errors"].append({"career_url":career_url,"stage":"scrape","error":str(error)});continue
             summary["jobs_found"]+=len(jobs);seen_urls=[];platform=self._platform_for_source(career_url,jobs)
             for job in jobs:
                 apply_url=str(getattr(job,"apply_url","") or "").strip()
