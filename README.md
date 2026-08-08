@@ -1,47 +1,80 @@
 # JobHunter AI
 
-JobHunter AI is an automated job discovery, matching, ranking, tracking, and alerting system. It monitors configured company career sources, compares jobs with resume skills and target-job preferences, ranks opportunities, stores job history, and sends smart alerts for the most relevant openings.
+JobHunter AI is an automated job discovery, matching, ranking, tracking, and alerting system. It parses a resume, applies target-job preferences, discovers jobs from supported sources, compares opportunities with the candidate profile, ranks the best matches, stores job history, and sends smart alerts for relevant openings.
 
-## Company-name-only Excel workflow
+## Product direction
 
-The intended user workflow is now deliberately simple: **the Excel file only needs a list of company names**.
+The project is moving away from an **Excel-first company discovery workflow**. Excel is no longer intended to be a required input to the core application.
 
-Example:
+The core JobHunter workflow is:
 
-| S.No. | Company Name |
-| ---: | --- |
-| 1 | Tata Consultancy Services (TCS) |
-| 2 | Infosys |
-| 3 | Wipro |
-
-Run:
-
-```bash
-python main.py --companies companies.xlsx
+```text
+Resume + Job Preferences
+          ↓
+   Job Source Manager
+          ↓
+ ┌──────────────────────────────┐
+ │ Authorized / supported       │
+ │ job platforms and sources    │
+ │                              │
+ │ • Job APIs / feeds           │
+ │ • Company career pages       │
+ │ • Supported ATS platforms    │
+ │ • Additional integrations    │
+ └──────────────┬───────────────┘
+                ↓
+       Normalize job listings
+                ↓
+        Deduplicate jobs
+                ↓
+      Resume + preference match
+                ↓
+      Recommendation ranking
+                ↓
+       Dashboard + alerts
 ```
 
-JobHunter AI will:
+The goal is to discover relevant jobs automatically instead of requiring the user to prepare and maintain a company spreadsheet.
 
-1. Read the company names.
-2. Automatically search for each company's public career/jobs page or supported ATS page.
-3. Write the discovered `Website`, `Career URL`, `Discovery Status`, and `Last Checked` columns back into **the same Excel file**.
-4. Reuse the saved Career URL on future runs instead of searching again.
-5. Scrape jobs from those company sources.
-6. Parse the configured resume and match jobs against its skills.
-7. Apply the user's target titles, locations, work modes, desired/excluded keywords, and minimum match score.
-8. Save matching jobs and send Email/Telegram alerts when notification settings are configured.
+## Multi-source job discovery
 
-A company with no discoverable career source is retained in the workbook with a `Not found` or `Low confidence` status instead of silently disappearing.
+The next major development milestone is a **Multi-Source Job Discovery Engine**. It will introduce a common `JobSource` abstraction and a source manager so different job providers can feed the same matching and recommendation pipeline.
 
-The discovery step is bounded and concurrent so one slow company does not block all other companies.
+Planned source categories include:
+
+- Job-search APIs and public feeds
+- Company career pages
+- Greenhouse
+- Lever
+- Workday
+- SmartRecruiters
+- Other supported ATS platforms
+- Authorized integrations for major job platforms
+- Search-page actions for platforms where direct automated access is not available
+
+Target platforms include services such as **LinkedIn, Indeed, Naukri.com, Foundit, Glassdoor, Wellfound, Internshala, Shine, Cutshort, and other relevant job sources**, subject to each platform's available APIs, feeds, integrations, and access terms.
+
+JobHunter AI will not make unauthorized scraping a requirement for these platforms. Each source will use an appropriate supported access method, while the normalized job model keeps the rest of the application source-independent.
+
+## Core workflow
+
+The intended user experience is:
+
+1. Provide a resume.
+2. Configure or confirm target job preferences.
+3. Start JobHunter AI without requiring an Excel company list.
+4. Discover jobs across configured and supported sources.
+5. Normalize and deduplicate listings from different sources.
+6. Parse the resume and match jobs against its skills.
+7. Apply target titles, locations, work modes, desired/excluded keywords, and minimum match score.
+8. Rank opportunities using the recommendation engine.
+9. Save matching jobs and their source/application URLs.
+10. Track applications, saved jobs, notes, and follow-ups from the dashboard.
+11. Send Email/Telegram alerts when notification settings are configured.
+
+Excel import/export may remain as an **optional utility** for users who want to supply or export company/job data, but it is not part of the required production workflow.
 
 ## Automated production runner
-
-After the first successful discovery, the same workbook can be monitored continuously:
-
-```bash
-python main.py --scheduled --companies companies.xlsx
-```
 
 The production runner performs an immediate scan, schedules recurring scans, prevents duplicate runner instances with a lock, records JSONL run history, handles run failures, and cleans up on SIGINT/SIGTERM.
 
@@ -80,10 +113,11 @@ JOBHUNTER_TELEGRAM_CHAT_ID
 | 4 | Dashboard Finalization | ✅ Complete |
 | 5 | Automated Production Runner | ✅ Complete |
 | 6 | V1 Hardening & Release | 🧪 Release validation |
+| 7 | Multi-Source Job Discovery | 📋 Planned |
 
 ## V1 capabilities
 
-JobHunter AI provides company career-page and ATS discovery, Greenhouse/Lever/Workday/SmartRecruiters scraping, resume parsing, weighted skill matching, job preferences, unified recommendation ranking, lifecycle detection, cross-source deduplication, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, and smart Email/Telegram alerts.
+JobHunter AI currently provides company career-page and ATS discovery, Greenhouse/Lever/Workday/SmartRecruiters scraping, resume parsing, weighted skill matching, job preferences, unified recommendation ranking, lifecycle detection, cross-source deduplication, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, and smart Email/Telegram alerts.
 
 Recommendation ranking combines resume fit, target preferences, freshness, application state, and active lifecycle state. The dashboard exposes recommendation scores and explanations and supports search/filtering, saved jobs, tracking, follow-ups, active/expired jobs, analytics, and mobile-friendly interaction.
 
@@ -119,8 +153,4 @@ pytest
 
 All six V1 implementation milestones are built. The remaining release gate is final green CI plus the production smoke checklist. After both pass, the repository can be tagged `v1.0.0`.
 
-## Future direction — V3
-
-V3 is planned around a simpler experience: upload a resume, automatically infer relevant skills/job titles, and generate matching alerts across broader job platforms. The intended direction includes LinkedIn, Indeed, Naukri.com, Glassdoor, and additional sources while retaining V1's matching, ranking, tracking, and smart-alert concepts.
-
-Platform access methods and integrations for V3 will be designed separately and are intentionally outside the frozen V1 scope.
+The multi-source discovery engine is intentionally planned as the next major development phase rather than being represented as completed V1 functionality.
