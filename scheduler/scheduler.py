@@ -26,8 +26,6 @@ class Scheduler:
         if not 0<=float(min_score)<=100:raise ValueError("min_score must be between 0 and 100")
         prefs=preferences if isinstance(preferences,JobPreferences) else JobPreferences.from_dict(preferences);skills=tuple(resume_skills);summary={"sources":0,"jobs_found":0,"jobs_saved":0,"jobs_skipped":0,"jobs_preference_excluded":0,"jobs_expired":0,"notifications_sent":0,"notifications_suppressed":0,"errors":[]}
         urls=tuple(career_urls);summary["sources"]=len(urls)
-        # Network-bound scraping is performed concurrently so one slow company
-        # cannot block every other company. Database writes remain sequential.
         scraped=[]
         with ThreadPoolExecutor(max_workers=min(self.MAX_SCRAPE_WORKERS,max(1,len(urls))),thread_name_prefix="job-scraper") as pool:
             futures=[pool.submit(self._scrape_one,url) for url in urls]
@@ -41,9 +39,11 @@ class Scheduler:
                 apply_url=str(getattr(job,"apply_url","") or "").strip()
                 if apply_url:seen_urls.append(apply_url)
                 preference=prefs.evaluate(job)
-                if preference["excluded_keywords"]:summary["jobs_preference_excluded"]+=1;summary["jobs_skipped"]+=1;continue
+                if preference["excluded_keywords"]:
+                    summary["jobs_preference_excluded"]+=1;summary["jobs_skipped"]+=1;self._diagnose_skip(job,"preference",preference.get("excluded_keywords"),None,min_score);continue
                 match=self.matcher.match_job(skills,job);match["preference_score"]=preference["preference_score"];match["preference_match"]=preference["preference_match"];match["preference_details"]=preference
-                if match["score"]<float(min_score):summary["jobs_skipped"]+=1;continue
+                if match["score"]<float(min_score):
+                    summary["jobs_skipped"]+=1;self._diagnose_skip(job,"score",None,match,min_score);continue
                 existing=self._existing_job(job);job_id=self.database.save_job(job,match=match);summary["jobs_saved"]+=1;stored=self.database.get_job(job_id)
                 if notification and self.notifier:
                     try:
@@ -55,6 +55,14 @@ class Scheduler:
                 try:summary["jobs_expired"]+=self.database.mark_missing_jobs_inactive(seen_urls,platform=platform)
                 except Exception as exc:summary["errors"].append({"career_url":career_url,"stage":"lifecycle","error":str(exc)})
         return summary
+    @staticmethod
+    def _diagnose_skip(job,reason,excluded,match,min_score):
+        """Print concise rejection diagnostics so zero-save runs are actionable."""
+        title=str(getattr(job,"title","") or "Untitled").strip();company=str(getattr(job,"company","") or "Unknown company").strip()
+        if reason=="preference":
+            print(f"[MATCH] SKIP preference | {company} | {title} | excluded={list(excluded or [])}",flush=True);return
+        match=match or {};score=float(match.get("score",0.0));matched=match.get("matched_skills",[]);missing=match.get("missing_skills",[]);required=match.get("missing_required_skills",[])
+        print(f"[MATCH] SKIP score | {company} | {title} | score={score:.1f}/{float(min_score):.1f} | matched={matched} | missing={missing} | missing_required={required}",flush=True)
     def _existing_job(self,job):
         d=self.database._job_dict(job);url=str(d.get("apply_url") or "").strip();key=self.database._job_key(d.get("title"),d.get("company"),d.get("location"));row=self.database.conn.execute("SELECT id FROM jobs WHERE apply_url=? OR (job_key=? AND job_key<>'') LIMIT 1",(url,key)).fetchone();return self.database.get_job(row["id"]) if row else None
     def _should_notify(self,job,previous,notification):
