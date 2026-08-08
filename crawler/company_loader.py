@@ -66,9 +66,9 @@ class CompanyLoader:
     def update_discovery_results(self, excel_path: str | Path, results: dict[str, dict]) -> None:
         """Write discovered URLs/status back into the same user Excel workbook.
 
-        ``results`` is keyed by company name and may contain ``website``,
-        ``career_url``, ``status`` and ``checked_at``. Existing user columns are
-        preserved; discovery columns are added only when necessary.
+        Existing user columns are preserved. Discovery columns are added only
+        when necessary and are explicitly converted to object/string-friendly
+        dtype so an empty Excel column loaded as float64 can accept URLs.
         """
         path = Path(excel_path)
         df = self._read(path).copy()
@@ -83,16 +83,27 @@ class CompanyLoader:
 
         if website_col is None:
             website_col = "Website"
-            df[website_col] = ""
+            df[website_col] = pd.Series([""] * len(df), index=df.index, dtype="object")
+        else:
+            df[website_col] = df[website_col].astype("object")
+
         if career_col is None:
             career_col = "Career URL"
-            df[career_col] = ""
+            df[career_col] = pd.Series([""] * len(df), index=df.index, dtype="object")
+        else:
+            df[career_col] = df[career_col].astype("object")
+
         if status_col is None:
             status_col = "Discovery Status"
-            df[status_col] = ""
+            df[status_col] = pd.Series([""] * len(df), index=df.index, dtype="object")
+        else:
+            df[status_col] = df[status_col].astype("object")
+
         if checked_col is None:
             checked_col = "Last Checked"
-            df[checked_col] = ""
+            df[checked_col] = pd.Series([""] * len(df), index=df.index, dtype="object")
+        else:
+            df[checked_col] = df[checked_col].astype("object")
 
         normalized = {str(key).strip().casefold(): value for key, value in results.items()}
         for index, value in df[company_col].items():
@@ -101,13 +112,13 @@ class CompanyLoader:
             if not result:
                 continue
             if result.get("website"):
-                df.at[index, website_col] = result["website"]
+                df.at[index, website_col] = str(result["website"])
             if result.get("career_url"):
-                df.at[index, career_col] = result["career_url"]
+                df.at[index, career_col] = str(result["career_url"])
             if result.get("status") is not None:
-                df.at[index, status_col] = result["status"]
+                df.at[index, status_col] = str(result["status"])
             if result.get("checked_at"):
-                df.at[index, checked_col] = result["checked_at"]
+                df.at[index, checked_col] = str(result["checked_at"])
 
         df.to_excel(path, index=False)
 
