@@ -98,6 +98,21 @@ def test_match_job_uses_job_description():
     assert result["missing_skills"] == ["docker"]
 
 
+def test_match_job_uses_title_when_description_is_empty():
+    matcher = SkillMatcher()
+    job = Job(
+        title="Python Selenium Automation Engineer",
+        company="Example",
+        location="Bengaluru",
+        apply_url="https://example.com/jobs/2",
+        description="",
+        platform="generic",
+    )
+    result = matcher.match_job(["python", "selenium"], job)
+    assert result["score"] == 100.0
+    assert result["matched_skills"] == ["python", "selenium"]
+
+
 def test_rank_jobs_best_match_first():
     matcher = SkillMatcher()
     jobs = [
