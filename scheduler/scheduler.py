@@ -3,6 +3,7 @@ from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor,as_completed
 from urllib.parse import urlparse
 from apscheduler.schedulers.blocking import BlockingScheduler
+from crawler.job_source import JobSearchRequest,JobSourceManager
 from crawler.scraper_factory import ScraperFactory
 from database.db import Database
 from matcher.skill_matcher import SkillMatcher
@@ -13,12 +14,15 @@ class Scheduler:
     """Schedule and execute the JobHunter discovery pipeline."""
     ALERT_PRIORITIES={"apply_now":3,"high":2,"medium":1,"low":0}
     MAX_SCRAPE_WORKERS=8
-    def __init__(self,scraper_factory:ScraperFactory|None=None,matcher:SkillMatcher|None=None,database:Database|None=None,notifier:Notifier|None=None)->None:
-        self._scheduler=BlockingScheduler();self.scraper_factory=scraper_factory or ScraperFactory();self.matcher=matcher or SkillMatcher();self.database=database or Database();self.notifier=notifier
+    def __init__(self,scraper_factory:ScraperFactory|None=None,matcher:SkillMatcher|None=None,database:Database|None=None,notifier:Notifier|None=None,source_manager:JobSourceManager|None=None)->None:
+        self._scheduler=BlockingScheduler();self.scraper_factory=scraper_factory or ScraperFactory();self.matcher=matcher or SkillMatcher();self.database=database or Database();self.notifier=notifier;self.source_manager=source_manager or JobSourceManager()
     def add_job(self,func,hours:int=1,**kwargs):
         if hours<=0:raise ValueError("hours must be greater than zero")
         return self._scheduler.add_job(func,trigger="interval",hours=hours,kwargs=kwargs or None)
     def add_pipeline_job(self,career_urls:Iterable[str],resume_skills:Iterable[str],hours:int=1,min_score:float=0.0,notification:dict|None=None,preferences:JobPreferences|dict|None=None):return self.add_job(self.run_pipeline,hours=hours,career_urls=tuple(career_urls),resume_skills=tuple(resume_skills),min_score=min_score,notification=notification,preferences=preferences)
+    def search_sources(self,request:JobSearchRequest,sources:Iterable[str]|None=None):
+        """Search registered multi-source adapters without changing the legacy ATS pipeline."""
+        return self.source_manager.search(request,sources=sources)
     def _scrape_one(self,career_url:str)->tuple[str,list,Exception|None]:
         try:return career_url,self.scraper_factory.scrape(career_url),None
         except Exception as exc:return career_url,[],exc
