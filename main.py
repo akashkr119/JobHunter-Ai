@@ -17,6 +17,7 @@ from crawler.career_finder import CareerFinder
 from crawler.company_domain_resolver import resolve as resolve_company_domain
 from crawler.company_loader import CompanyLoader
 from crawler.job_source import JobSearchRequest, JobSourceManager
+from crawler.jooble_source import JoobleSource
 from crawler.source_pipeline import process_source_jobs
 from crawler.website_finder import WebsiteFinder
 from database.db import Database
@@ -43,6 +44,8 @@ def build_scheduler(settings: Settings) -> Scheduler:
     sources = []
     if settings.adzuna_app_id and settings.adzuna_app_key:
         sources.append(AdzunaSource(app_id=settings.adzuna_app_id, app_key=settings.adzuna_app_key))
+    if settings.jooble_api_key:
+        sources.append(JoobleSource(api_key=settings.jooble_api_key))
     source_manager = JobSourceManager(sources=sources)
     return Scheduler(matcher=SkillMatcher(), database=Database(settings.database_path), notifier=notifier, source_manager=source_manager)
 
@@ -191,7 +194,7 @@ def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
 def validate_startup(career_urls: list[str], settings: Settings) -> None:
     resume = Path(settings.resume_path)
     if not resume.is_file(): raise ValueError(f"Resume file not found: {resume}")
-    if not career_urls and not (settings.adzuna_app_id and settings.adzuna_app_key): raise ValueError("No job sources configured. Provide career URLs or Adzuna API credentials.")
+    if not career_urls and not (settings.adzuna_app_id and settings.adzuna_app_key) and not settings.jooble_api_key: raise ValueError("No job sources configured. Provide career URLs, Adzuna API credentials, or a Jooble API key.")
     for url in career_urls:
         p = urlparse(str(url).strip())
         if p.scheme not in {"http", "https"} or not p.netloc: raise ValueError(f"Invalid career URL: {url}")
@@ -209,7 +212,8 @@ def run_once(career_urls: list[str], settings: Settings) -> dict:
         else:
             summary = {"sources": 0, "jobs_found": 0, "jobs_saved": 0, "jobs_skipped": 0, "jobs_preference_excluded": 0, "notifications_sent": 0, "notifications_suppressed": 0, "errors": []}
 
-        if settings.adzuna_app_id and settings.adzuna_app_key:
+        source_jobs_found = 0
+        for source_name in scheduler.source_manager.names():
             request = JobSearchRequest(
                 keywords=settings.target_titles or settings.desired_keywords,
                 locations=settings.preferred_locations,
@@ -220,15 +224,16 @@ def run_once(career_urls: list[str], settings: Settings) -> dict:
                 scheduler,
                 request,
                 resume_skills,
-                sources=("adzuna",),
+                sources=(source_name,),
                 min_score=settings.min_match_score,
                 notification=notification,
                 preferences=preferences,
             )
+            source_jobs_found += source_summary["jobs_found"]
             for key in ("jobs_found", "jobs_saved", "jobs_skipped", "jobs_preference_excluded", "notifications_sent", "notifications_suppressed"):
                 summary[key] = summary.get(key, 0) + source_summary.get(key, 0)
-            summary["source_jobs_found"] = source_summary["jobs_found"]
             summary["errors"].extend(source_summary["errors"])
+        summary["source_jobs_found"] = source_jobs_found
         return summary
     finally:
         scheduler.database.close()
