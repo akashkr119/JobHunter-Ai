@@ -16,7 +16,7 @@ from crawler.adzuna_source import AdzunaSource
 from crawler.career_finder import CareerFinder
 from crawler.company_domain_resolver import resolve as resolve_company_domain
 from crawler.company_loader import CompanyLoader
-from crawler.job_source import JobSourceManager
+from crawler.job_source import JobSearchRequest, JobSourceManager
 from crawler.website_finder import WebsiteFinder
 from database.db import Database
 from matcher.resume_parser import ResumeParser
@@ -202,7 +202,7 @@ def run_once(career_urls: list[str], settings: Settings) -> dict:
     try:
         summary = scheduler.run_pipeline(career_urls=career_urls, resume_skills=load_resume_skills(settings), min_score=settings.min_match_score, notification=settings.notification_config(), preferences=settings.job_preferences()) if career_urls else {"sources": 0, "jobs_found": 0, "jobs_saved": 0, "jobs_skipped": 0, "errors": []}
         if settings.adzuna_app_id and settings.adzuna_app_key:
-            request = __import__("crawler.job_source", fromlist=["JobSearchRequest"]).JobSearchRequest(keywords=settings.target_titles or settings.desired_keywords, locations=settings.preferred_locations, remote="remote" in settings.work_modes, limit=settings.source_limit)
+            request = JobSearchRequest(keywords=settings.target_titles or settings.desired_keywords, locations=settings.preferred_locations, remote="remote" in settings.work_modes, limit=settings.source_limit)
             source_jobs = scheduler.search_sources(request, sources=("adzuna",))
             summary["source_jobs_found"] = len(source_jobs)
         return summary
