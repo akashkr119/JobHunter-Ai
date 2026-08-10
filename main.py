@@ -12,9 +12,11 @@ import requests
 from bs4 import BeautifulSoup
 
 from config.settings import Settings
+from crawler.adzuna_source import AdzunaSource
 from crawler.career_finder import CareerFinder
 from crawler.company_domain_resolver import resolve as resolve_company_domain
 from crawler.company_loader import CompanyLoader
+from crawler.job_source import JobSourceManager
 from crawler.website_finder import WebsiteFinder
 from database.db import Database
 from matcher.resume_parser import ResumeParser
@@ -37,7 +39,11 @@ def build_scheduler(settings: Settings) -> Scheduler:
     notifier = None
     if settings.notification_channel:
         notifier = Notifier(smtp_host=settings.smtp_host, smtp_port=settings.smtp_port, smtp_username=settings.smtp_username, smtp_password=settings.smtp_password, smtp_sender=settings.smtp_sender, telegram_bot_token=settings.telegram_bot_token)
-    return Scheduler(matcher=SkillMatcher(), database=Database(settings.database_path), notifier=notifier)
+    sources = []
+    if settings.adzuna_app_id and settings.adzuna_app_key:
+        sources.append(AdzunaSource(app_id=settings.adzuna_app_id, app_key=settings.adzuna_app_key))
+    source_manager = JobSourceManager(sources=sources)
+    return Scheduler(matcher=SkillMatcher(), database=Database(settings.database_path), notifier=notifier, source_manager=source_manager)
 
 
 def load_resume_skills(settings: Settings) -> list[str]:
@@ -132,9 +138,7 @@ def _resolve_company_career(company: str) -> dict:
         print(f"[DISCOVERY] {company}: official domain -> {direct['website']}", flush=True)
         if direct.get("career_url"):
             return direct
-        # The official domain is reliable even when /careers is not a simple path.
         return direct
-
     session = requests.Session(); session.headers.update(SEARCH_HEADERS)
     candidates: dict[str, tuple[int, str]] = {}
     links = _jina_results(session, company)
@@ -172,7 +176,6 @@ def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
                 print(f"[DISCOVERY] {completed}/{len(futures)} {company}: {result['status']} -> {result.get('career_url') or result.get('website') or '-'}", flush=True)
         loader.update_discovery_results(excel_path, results)
         print(f"[DISCOVERY] Excel updated: {excel_path}", flush=True)
-    # Reload after enrichment so persisted URLs are used on this run too.
     targets = loader.load_targets(excel_path)
     for target in targets:
         company = target["company"]; career_url = target.get("career_url"); website = target.get("website")
@@ -187,7 +190,7 @@ def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
 def validate_startup(career_urls: list[str], settings: Settings) -> None:
     resume = Path(settings.resume_path)
     if not resume.is_file(): raise ValueError(f"Resume file not found: {resume}")
-    if not career_urls: raise ValueError("No career URLs could be resolved from the supplied Excel file. Check the Discovery Status column in the workbook.")
+    if not career_urls and not (settings.adzuna_app_id and settings.adzuna_app_key): raise ValueError("No job sources configured. Provide career URLs or Adzuna API credentials.")
     for url in career_urls:
         p = urlparse(str(url).strip())
         if p.scheme not in {"http", "https"} or not p.netloc: raise ValueError(f"Invalid career URL: {url}")
@@ -196,7 +199,13 @@ def validate_startup(career_urls: list[str], settings: Settings) -> None:
 
 def run_once(career_urls: list[str], settings: Settings) -> dict:
     scheduler = build_scheduler(settings)
-    try: return scheduler.run_pipeline(career_urls=career_urls, resume_skills=load_resume_skills(settings), min_score=settings.min_match_score, notification=settings.notification_config(), preferences=settings.job_preferences())
+    try:
+        summary = scheduler.run_pipeline(career_urls=career_urls, resume_skills=load_resume_skills(settings), min_score=settings.min_match_score, notification=settings.notification_config(), preferences=settings.job_preferences()) if career_urls else {"sources": 0, "jobs_found": 0, "jobs_saved": 0, "jobs_skipped": 0, "errors": []}
+        if settings.adzuna_app_id and settings.adzuna_app_key:
+            request = __import__("crawler.job_source", fromlist=["JobSearchRequest"]).JobSearchRequest(keywords=settings.target_titles or settings.desired_keywords, locations=settings.preferred_locations, remote="remote" in settings.work_modes, limit=settings.source_limit)
+            source_jobs = scheduler.search_sources(request, sources=("adzuna",))
+            summary["source_jobs_found"] = len(source_jobs)
+        return summary
     finally: scheduler.database.close()
 
 
@@ -219,7 +228,7 @@ def main() -> int:
         if args.companies: career_urls.extend(load_career_urls(args.companies, discover=not args.no_discovery))
         validate_startup(career_urls, settings)
         summary = run_once(career_urls, settings)
-        print(f"JobHunter run complete: found={summary['jobs_found']} saved={summary['jobs_saved']} skipped={summary['jobs_skipped']} notifications={summary['notifications_sent']} errors={len(summary['errors'])}")
+        print(f"JobHunter run complete: found={summary['jobs_found']} saved={summary['jobs_saved']} source_found={summary.get('source_jobs_found', 0)} skipped={summary['jobs_skipped']} notifications={summary.get('notifications_sent', 0)} errors={len(summary['errors'])}")
         return 0 if not summary["errors"] else 1
     except ValueError as exc:
         print(f"Configuration error: {exc}"); return 2
