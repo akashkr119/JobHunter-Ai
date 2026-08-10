@@ -17,6 +17,7 @@ from crawler.career_finder import CareerFinder
 from crawler.company_domain_resolver import resolve as resolve_company_domain
 from crawler.company_loader import CompanyLoader
 from crawler.job_source import JobSearchRequest, JobSourceManager
+from crawler.source_pipeline import process_source_jobs
 from crawler.website_finder import WebsiteFinder
 from database.db import Database
 from matcher.resume_parser import ResumeParser
@@ -28,7 +29,7 @@ from scheduler.scheduler import Scheduler
 SEARCH_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.8,*/*;q=0.8",
 }
 BLOCKED_HOSTS = {"google.com","www.google.com","bing.com","www.bing.com","duckduckgo.com","html.duckduckgo.com","linkedin.com","www.linkedin.com","facebook.com","www.facebook.com","instagram.com","www.instagram.com","youtube.com","www.youtube.com","wikipedia.org","www.wikipedia.org","twitter.com","x.com","indeed.com","www.indeed.com","naukri.com","www.naukri.com","glassdoor.com","www.glassdoor.com","ziprecruiter.com","www.ziprecruiter.com"}
 ATS_HOSTS = ("greenhouse.io","lever.co","myworkdayjobs.com","smartrecruiters.com","ashbyhq.com","successfactors.com","taleo.net","icims.com","jobvite.com")
@@ -200,13 +201,37 @@ def validate_startup(career_urls: list[str], settings: Settings) -> None:
 def run_once(career_urls: list[str], settings: Settings) -> dict:
     scheduler = build_scheduler(settings)
     try:
-        summary = scheduler.run_pipeline(career_urls=career_urls, resume_skills=load_resume_skills(settings), min_score=settings.min_match_score, notification=settings.notification_config(), preferences=settings.job_preferences()) if career_urls else {"sources": 0, "jobs_found": 0, "jobs_saved": 0, "jobs_skipped": 0, "errors": []}
+        resume_skills = load_resume_skills(settings)
+        notification = settings.notification_config()
+        preferences = settings.job_preferences()
+        if career_urls:
+            summary = scheduler.run_pipeline(career_urls=career_urls, resume_skills=resume_skills, min_score=settings.min_match_score, notification=notification, preferences=preferences)
+        else:
+            summary = {"sources": 0, "jobs_found": 0, "jobs_saved": 0, "jobs_skipped": 0, "jobs_preference_excluded": 0, "notifications_sent": 0, "notifications_suppressed": 0, "errors": []}
+
         if settings.adzuna_app_id and settings.adzuna_app_key:
-            request = JobSearchRequest(keywords=settings.target_titles or settings.desired_keywords, locations=settings.preferred_locations, remote="remote" in settings.work_modes, limit=settings.source_limit)
-            source_jobs = scheduler.search_sources(request, sources=("adzuna",))
-            summary["source_jobs_found"] = len(source_jobs)
+            request = JobSearchRequest(
+                keywords=settings.target_titles or settings.desired_keywords,
+                locations=settings.preferred_locations,
+                remote="remote" in settings.work_modes,
+                limit=settings.source_limit,
+            )
+            source_summary = process_source_jobs(
+                scheduler,
+                request,
+                resume_skills,
+                sources=("adzuna",),
+                min_score=settings.min_match_score,
+                notification=notification,
+                preferences=preferences,
+            )
+            for key in ("jobs_found", "jobs_saved", "jobs_skipped", "jobs_preference_excluded", "notifications_sent", "notifications_suppressed"):
+                summary[key] = summary.get(key, 0) + source_summary.get(key, 0)
+            summary["source_jobs_found"] = source_summary["jobs_found"]
+            summary["errors"].extend(source_summary["errors"])
         return summary
-    finally: scheduler.database.close()
+    finally:
+        scheduler.database.close()
 
 
 def run_scheduled(career_urls: list[str], settings: Settings) -> None:
