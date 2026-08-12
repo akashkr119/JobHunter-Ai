@@ -2,14 +2,19 @@
 
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
+import pytest
 
 from config.settings import Settings
-from main import build_scheduler, load_career_urls, load_resume_skills, run_once, run_scheduled
+from main import build_scheduler, load_resume_skills, parse_args, run_once, validate_startup
 
 
 def make_settings(tmp_path, **overrides):
-    values = {"database_path": str(tmp_path / "jobs.db"), "resume_path": str(tmp_path / "resume.txt"), "min_match_score": 60.0, "scheduler_hours": 6}
+    values = {
+        "database_path": str(tmp_path / "jobs.db"),
+        "resume_path": str(tmp_path / "resume.txt"),
+        "min_match_score": 60.0,
+        "scheduler_hours": 6,
+    }
     values.update(overrides)
     return Settings(**values)
 
@@ -25,11 +30,30 @@ def test_build_scheduler_uses_configured_database(tmp_path):
 
 
 def test_build_scheduler_creates_notifier_when_enabled(tmp_path):
-    settings = make_settings(tmp_path, notification_channel="telegram", telegram_bot_token="token", telegram_chat_id="123")
+    settings = make_settings(
+        tmp_path,
+        notification_channel="telegram",
+        telegram_bot_token="token",
+        telegram_chat_id="123",
+    )
     scheduler = build_scheduler(settings)
     try:
         assert scheduler.notifier is not None
         assert scheduler.notifier.telegram_bot_token == "token"
+    finally:
+        scheduler.database.close()
+
+
+def test_build_scheduler_registers_configured_sources(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+        jooble_api_key="jooble-key",
+    )
+    scheduler = build_scheduler(settings)
+    try:
+        assert set(scheduler.source_manager.names()) == {"adzuna", "jooble"}
     finally:
         scheduler.database.close()
 
@@ -41,82 +65,108 @@ def test_load_resume_skills(tmp_path):
     assert {"python", "selenium", "pytest", "docker"}.issubset(skills)
 
 
-def test_load_career_urls_prefers_explicit_career_url(tmp_path):
-    workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame([{"Company": "Example", "Website": "https://example.com", "Career URL": "https://jobs.lever.co/example"}]).to_excel(workbook, index=False)
-    assert load_career_urls(str(workbook)) == ["https://jobs.lever.co/example"]
+def test_parse_args_no_longer_accepts_excel_flag(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["jobhunter"])
+    args = parse_args()
+    assert args.career_urls == []
+    assert not hasattr(args, "companies")
 
 
-def test_load_career_urls_offline_mode_generates_candidates(tmp_path):
-    workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame([{"Company": "Example", "Website": "example.com"}]).to_excel(workbook, index=False)
-    with patch("main.CareerFinder") as finder_class:
-        finder = finder_class.return_value
-        finder.find.return_value = ["https://example.com/careers", "https://example.com/jobs"]
-        urls = load_career_urls(str(workbook), discover=False)
-    finder.find.assert_called_once_with("https://example.com", discover=False)
-    assert urls == ["https://example.com/careers", "https://example.com/jobs"]
+def test_validate_startup_accepts_career_url_without_excel(tmp_path):
+    settings = make_settings(tmp_path)
+    resume = tmp_path / "resume.txt"
+    resume.write_text("Python", encoding="utf-8")
+    validate_startup(["https://example.com/careers"], settings)
 
 
-def test_load_career_urls_uses_discovered_ats_link(tmp_path):
-    workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame([{"Company": "Example", "Website": "example.com"}]).to_excel(workbook, index=False)
-    with patch("main.CareerFinder") as finder_class:
-        finder = finder_class.return_value
-        finder.find.return_value = ["https://boards.greenhouse.io/example", "https://example.com/careers"]
-        urls = load_career_urls(str(workbook), discover=True)
-    finder.find.assert_called_once_with("https://example.com", discover=True)
-    assert urls[0] == "https://boards.greenhouse.io/example"
-    assert "https://example.com/careers" in urls
+def test_validate_startup_accepts_api_source_without_career_url(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        adzuna_app_id="app-id",
+        adzuna_app_key="app-key",
+    )
+    resume = tmp_path / "resume.txt"
+    resume.write_text("Python", encoding="utf-8")
+    validate_startup([], settings)
 
 
-def test_company_name_only_excel_discovers_and_updates_workbook(tmp_path):
-    workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame([{"S.No.": 1, "Company Name": "Example"}]).to_excel(workbook, index=False)
-    discovered = {"website": "https://example.com", "career_url": "https://jobs.lever.co/example", "status": "Found"}
-    with patch("main._resolve_company_career", return_value=discovered):
-        urls = load_career_urls(str(workbook))
-    assert urls == ["https://jobs.lever.co/example"]
-    updated = pd.read_excel(workbook)
-    assert updated.loc[0, "Company Name"] == "Example"
-    assert updated.loc[0, "Website"] == "https://example.com"
-    assert updated.loc[0, "Career URL"] == "https://jobs.lever.co/example"
-    assert updated.loc[0, "Discovery Status"] == "Found"
-
-
-def test_company_name_only_with_no_result_is_reported_and_returns_no_urls(tmp_path):
-    workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame([{"Company Name": "Unknown Example"}]).to_excel(workbook, index=False)
-    with patch("main._resolve_company_career", return_value={"website": None, "career_url": None, "status": "Not found"}):
-        urls = load_career_urls(str(workbook))
-    assert urls == []
-    updated = pd.read_excel(workbook)
-    assert updated.loc[0, "Discovery Status"] == "Not found"
-
-
-def test_load_career_urls_removes_duplicates(tmp_path):
-    workbook = tmp_path / "companies.xlsx"
-    pd.DataFrame([{"Company": "Example", "Career URL": "https://jobs.lever.co/example"}, {"Company": "Example", "Career URL": "https://jobs.lever.co/example"}]).to_excel(workbook, index=False)
-    assert load_career_urls(str(workbook)) == ["https://jobs.lever.co/example"]
+def test_validate_startup_rejects_no_source_configuration(tmp_path):
+    settings = make_settings(tmp_path)
+    resume = tmp_path / "resume.txt"
+    resume.write_text("Python", encoding="utf-8")
+    with pytest.raises(ValueError, match="No job sources configured"):
+        validate_startup([], settings)
 
 
 @patch("main.load_resume_skills", return_value=["python", "selenium"])
 @patch("main.build_scheduler")
-def test_run_once_executes_pipeline(mock_build_scheduler, mock_load_skills, tmp_path):
+def test_run_once_executes_direct_pipeline(mock_build_scheduler, mock_load_skills, tmp_path):
     scheduler = MagicMock()
-    scheduler.run_pipeline.return_value = {"sources": 1, "jobs_found": 2, "jobs_saved": 1, "jobs_skipped": 1, "notifications_sent": 0, "errors": []}
+    scheduler.source_manager.names.return_value = ()
+    scheduler.run_pipeline.return_value = {
+        "sources": 1,
+        "jobs_found": 2,
+        "jobs_saved": 1,
+        "jobs_skipped": 1,
+        "jobs_preference_excluded": 0,
+        "notifications_sent": 0,
+        "notifications_suppressed": 0,
+        "errors": [],
+    }
     mock_build_scheduler.return_value = scheduler
     settings = make_settings(tmp_path)
     summary = run_once(["https://example.com/careers"], settings)
-    scheduler.run_pipeline.assert_called_once_with(career_urls=["https://example.com/careers"], resume_skills=["python", "selenium"], min_score=60.0, notification=None, preferences=settings.job_preferences())
+    scheduler.run_pipeline.assert_called_once_with(
+        career_urls=["https://example.com/careers"],
+        resume_skills=["python", "selenium"],
+        min_score=60.0,
+        notification=None,
+        preferences=settings.job_preferences(),
+    )
     scheduler.database.close.assert_called_once()
     assert summary["jobs_saved"] == 1
+
+
+@patch("main.process_source_jobs")
+@patch("main.load_resume_skills", return_value=["python"])
+@patch("main.build_scheduler")
+def test_run_once_executes_configured_sources(
+    mock_build_scheduler, mock_load_skills, mock_process_source_jobs, tmp_path
+):
+    scheduler = MagicMock()
+    scheduler.source_manager.names.return_value = ("adzuna", "jooble")
+    scheduler.run_pipeline.return_value = {
+        "sources": 0,
+        "jobs_found": 0,
+        "jobs_saved": 0,
+        "jobs_skipped": 0,
+        "jobs_preference_excluded": 0,
+        "notifications_sent": 0,
+        "notifications_suppressed": 0,
+        "errors": [],
+    }
+    mock_process_source_jobs.side_effect = [
+        {"jobs_found": 2, "jobs_saved": 1, "jobs_skipped": 1, "jobs_preference_excluded": 0, "notifications_sent": 0, "notifications_suppressed": 0, "errors": []},
+        {"jobs_found": 3, "jobs_saved": 2, "jobs_skipped": 1, "jobs_preference_excluded": 0, "notifications_sent": 0, "notifications_suppressed": 0, "errors": []},
+    ]
+    mock_build_scheduler.return_value = scheduler
+    settings = make_settings(tmp_path)
+
+    summary = run_once([], settings)
+
+    assert mock_process_source_jobs.call_count == 2
+    assert summary["jobs_found"] == 5
+    assert summary["jobs_saved"] == 3
+    assert summary["source_count"] == 2
+    scheduler.database.close.assert_called_once()
 
 
 @patch("main.ProductionRunner")
 @patch("main.load_resume_skills", return_value=["python"])
 @patch("main.build_scheduler")
-def test_run_scheduled_registers_and_starts_scheduler(mock_build_scheduler, mock_load_skills, mock_runner, tmp_path):
+def test_run_scheduled_registers_and_starts_scheduler(
+    mock_build_scheduler, mock_load_skills, mock_runner, tmp_path
+):
     scheduler = MagicMock()
     mock_build_scheduler.return_value = scheduler
     settings = make_settings(tmp_path, scheduler_hours=3)
@@ -128,7 +178,9 @@ def test_run_scheduled_registers_and_starts_scheduler(mock_build_scheduler, mock
 
 @patch("main.load_resume_skills", side_effect=FileNotFoundError("resume missing"))
 @patch("main.build_scheduler")
-def test_run_once_closes_database_when_resume_loading_fails(mock_build_scheduler, mock_load_skills, tmp_path):
+def test_run_once_closes_database_when_resume_loading_fails(
+    mock_build_scheduler, mock_load_skills, tmp_path
+):
     scheduler = MagicMock()
     mock_build_scheduler.return_value = scheduler
     settings = make_settings(tmp_path)
