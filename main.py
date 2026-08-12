@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 
 from config.settings import Settings
 from crawler.adzuna_source import AdzunaSource
-from crawler.job_source import JobSearchRequest
+from crawler.job_source import JobSearchRequest, JobSourceManager
 from crawler.jooble_source import JoobleSource
 from crawler.source_pipeline import process_source_jobs
 from database.db import Database
@@ -40,8 +40,6 @@ def build_scheduler(settings: Settings) -> Scheduler:
         )
     if settings.jooble_api_key:
         sources.append(JoobleSource(api_key=settings.jooble_api_key))
-
-    from crawler.job_source import JobSourceManager
 
     source_manager = JobSourceManager(sources=sources)
     return Scheduler(
@@ -122,6 +120,7 @@ def run_once(career_urls: list[str], settings: Settings) -> dict:
         )
 
         source_names = scheduler.source_manager.names()
+        source_jobs_found = 0
         for source_name in source_names:
             source_summary = process_source_jobs(
                 scheduler,
@@ -132,6 +131,7 @@ def run_once(career_urls: list[str], settings: Settings) -> dict:
                 notification=notification,
                 preferences=preferences,
             )
+            source_jobs_found += source_summary.get("jobs_found", 0)
             for key in (
                 "jobs_found",
                 "jobs_saved",
@@ -143,9 +143,7 @@ def run_once(career_urls: list[str], settings: Settings) -> dict:
                 summary[key] = summary.get(key, 0) + source_summary.get(key, 0)
             summary["errors"].extend(source_summary.get("errors", []))
 
-        summary["source_jobs_found"] = sum(
-            process.get("jobs_found", 0) for process in []
-        )
+        summary["source_jobs_found"] = source_jobs_found
         summary["source_count"] = len(source_names)
         return summary
     finally:
@@ -186,6 +184,7 @@ def main() -> int:
             f"found={summary['jobs_found']} "
             f"saved={summary['jobs_saved']} "
             f"sources={summary.get('source_count', 0)} "
+            f"source_found={summary.get('source_jobs_found', 0)} "
             f"skipped={summary['jobs_skipped']} "
             f"notifications={summary.get('notifications_sent', 0)} "
             f"errors={len(summary['errors'])}"
