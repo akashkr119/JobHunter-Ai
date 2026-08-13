@@ -56,7 +56,7 @@ class JobSourceManager:
 
     def names(self) -> tuple[str, ...]:
         """Return registered source names in deterministic order."""
-        return tuple(sorted(self._sources))
+        return tuple(self._sources)
 
     def get(self, name: str) -> JobSource:
         """Return a registered source or raise a useful error."""
