@@ -3,9 +3,8 @@ from crawler.source_manager import CallableJobSource, JobSourceManager
 
 
 class FakeSource:
-    name = "Fake"
-
-    def __init__(self, jobs=None, error=None):
+    def __init__(self, name="Fake", jobs=None, error=None):
+        self.name = name
         self.jobs = jobs or []
         self.error = error
 
@@ -39,13 +38,16 @@ def test_manager_rejects_invalid_source():
 
 
 def test_manager_isolates_source_failure():
-    good = FakeSource([make_job("https://example.com/1")])
-    bad = FakeSource(error=RuntimeError("provider unavailable"))
+    good = FakeSource(name="good", jobs=[make_job("https://example.com/1")])
+    bad = FakeSource(name="bad", error=RuntimeError("provider unavailable"))
     manager = JobSourceManager([good, bad])
 
     results = manager.search_with_results("python")
-    assert results[0].source == "fake"
-    assert results[0].error is not None
+    assert results[0].source == "good"
+    assert len(results[0].jobs) == 1
+    assert results[0].error is None
+    assert results[1].source == "bad"
+    assert results[1].error is not None
 
 
 def test_manager_deduplicates_by_apply_url():
