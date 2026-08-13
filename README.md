@@ -189,4 +189,6 @@ Run the full automated suite with:
 pytest
 ```
 
-The release gate requires green CI plus the production smoke checklist. New auto-apply and resume-review functionality must also have dedicated tests covering authorization, duplicate prevention, missing information, notification delivery, and safe failure behavior before being marked complete.
+The release gate requires green CI plus the production smoke checklist. After both pass, the repository can be tagged `v1.0.0`.
+
+New auto-apply and resume-review functionality must also have dedicated tests covering authorization, duplicate prevention, missing information, notification delivery, and safe failure behavior before being marked complete.
