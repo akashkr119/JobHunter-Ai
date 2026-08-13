@@ -132,7 +132,6 @@ def _resolve_company_career(company: str) -> dict:
         print(f"[DISCOVERY] {company}: official domain -> {direct['website']}", flush=True)
         if direct.get("career_url"):
             return direct
-        # The official domain is reliable even when /careers is not a simple path.
         return direct
 
     session = requests.Session(); session.headers.update(SEARCH_HEADERS)
@@ -172,10 +171,9 @@ def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
                 print(f"[DISCOVERY] {completed}/{len(futures)} {company}: {result['status']} -> {result.get('career_url') or result.get('website') or '-'}", flush=True)
         loader.update_discovery_results(excel_path, results)
         print(f"[DISCOVERY] Excel updated: {excel_path}", flush=True)
-    # Reload after enrichment so persisted URLs are used on this run too.
     targets = loader.load_targets(excel_path)
     for target in targets:
-        company = target["company"]; career_url = target.get("career_url"); website = target.get("website")
+        career_url = target.get("career_url"); website = target.get("website")
         if career_url: candidates = [website_finder.normalize_url(career_url)]
         elif website: candidates = career_finder.find(website_finder.normalize_url(website), discover=discover)
         else: candidates = []
@@ -186,12 +184,17 @@ def load_career_urls(excel_path: str, discover: bool = True) -> list[str]:
 
 def validate_startup(career_urls: list[str], settings: Settings) -> None:
     resume = Path(settings.resume_path)
-    if not resume.is_file(): raise ValueError(f"Resume file not found: {resume}")
-    if not career_urls: raise ValueError("No career URLs could be resolved from the supplied Excel file. Check the Discovery Status column in the workbook.")
+    if not resume.is_file():
+        raise ValueError(f"Resume file not found: {resume}")
+    if not career_urls:
+        raise ValueError("At least one career URL is required")
     for url in career_urls:
         p = urlparse(str(url).strip())
-        if p.scheme not in {"http", "https"} or not p.netloc: raise ValueError(f"Invalid career URL: {url}")
-    Path(settings.database_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True); settings.notification_config()
+        if p.scheme not in {"http", "https"} or not p.netloc:
+            raise ValueError(f"Invalid career URL: {url}")
+    for path in (settings.database_path, settings.run_history_path, settings.run_lock_path):
+        Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+    settings.notification_config()
 
 
 def run_once(career_urls: list[str], settings: Settings) -> dict:
