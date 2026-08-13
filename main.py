@@ -187,7 +187,7 @@ def validate_startup(career_urls: list[str], settings: Settings) -> None:
     if not resume.is_file():
         raise ValueError(f"Resume file not found: {resume}")
     if not career_urls:
-        raise ValueError("At least one career URL is required")
+        raise ValueError("at least one career URL is required")
     for url in career_urls:
         p = urlparse(str(url).strip())
         if p.scheme not in {"http", "https"} or not p.netloc:
