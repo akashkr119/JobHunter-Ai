@@ -1,7 +1,7 @@
 """Unified job-source orchestration.
 
 The source manager deliberately keeps external job providers behind a small
-adapter interface.  Existing ATS/career-page scrapers can be registered as
+adapter interface. Existing ATS/career-page scrapers can be registered as
 sources now, while API-backed or permitted platform adapters (LinkedIn,
 Indeed, Naukri, etc.) can be added later without changing matching/database
 code.
@@ -41,6 +41,18 @@ class JobSourceManager:
         for source in sources or ():
             self.register(source)
 
+    @classmethod
+    def with_builtin_sources(cls, *, adzuna: JobSource | None = None) -> "JobSourceManager":
+        """Create a manager with configured built-in sources.
+
+        Providers are opt-in so importing the manager never requires API
+        credentials. Adzuna is registered only when an adapter is supplied.
+        """
+        manager = cls()
+        if adzuna is not None:
+            manager.register(adzuna)
+        return manager
+
     def register(self, source: JobSource) -> None:
         """Register a source by its stable, case-insensitive name."""
         name = str(getattr(source, "name", "")).strip().lower()
@@ -68,13 +80,9 @@ class JobSourceManager:
             raise ValueError(f"Unknown job source: {name!r}. Available: {available}") from exc
 
     def search(self, query: str = "", sources: Iterable[str] | None = None, **kwargs) -> list[Job]:
-        """Run selected sources and return one normalized, de-duplicated list.
-
-        A source failure is isolated so one unavailable provider cannot prevent
-        the remaining providers from returning jobs.  Errors are exposed via
-        :meth:`search_with_results` when callers need diagnostics.
-        """
-        return [job for result in self.search_with_results(query, sources=sources, **kwargs) for job in result.jobs]
+        """Run selected sources and return one normalized, de-duplicated list."""
+        jobs = [job for result in self.search_with_results(query, sources=sources, **kwargs) for job in result.jobs]
+        return self.deduplicate(jobs)
 
     def search_with_results(self, query: str = "", sources: Iterable[str] | None = None, **kwargs) -> list[SourceRun]:
         """Run selected sources while preserving per-source success/failure."""
