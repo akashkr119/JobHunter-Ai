@@ -63,6 +63,10 @@ class AdzunaSource:
     def _normalize(results: Iterable[dict[str, Any]]) -> list[Job]:
         jobs: list[Job] = []
         for item in results:
+            if not isinstance(item, dict):
+                # Provider payloads can contain null or otherwise malformed
+                # records. Ignore those records without affecting valid jobs.
+                continue
             try:
                 company = item.get("company") or {}
                 location = item.get("location") or {}
