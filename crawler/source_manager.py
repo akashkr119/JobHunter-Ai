@@ -42,15 +42,22 @@ class JobSourceManager:
             self.register(source)
 
     @classmethod
-    def with_builtin_sources(cls, *, adzuna: JobSource | None = None) -> "JobSourceManager":
+    def with_builtin_sources(
+        cls,
+        *,
+        adzuna: JobSource | None = None,
+        linkedin: JobSource | None = None,
+    ) -> "JobSourceManager":
         """Create a manager with configured built-in sources.
 
         Providers are opt-in so importing the manager never requires API
-        credentials. Adzuna is registered only when an adapter is supplied.
+        credentials or platform login. A provider is registered only when an
+        authorized adapter is supplied.
         """
         manager = cls()
-        if adzuna is not None:
-            manager.register(adzuna)
+        for source in (adzuna, linkedin):
+            if source is not None:
+                manager.register(source)
         return manager
 
     def register(self, source: JobSource) -> None:
