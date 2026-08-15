@@ -49,7 +49,7 @@ def test_adzuna_search_uses_credentials_and_normalizes_jobs():
 
 def test_adzuna_skips_malformed_records():
     results = AdzunaSource._normalize([
-        {"title": "Good", "company": {}, "location": {}, "redirect_url": "https://example.com/good"},
+        {"title": "Good", "company": {"display_name": "Example Ltd"}, "location": {}, "redirect_url": "https://example.com/good"},
         None,
     ])
     assert len(results) == 1
