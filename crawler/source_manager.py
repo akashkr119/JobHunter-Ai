@@ -47,6 +47,7 @@ class JobSourceManager:
         *,
         adzuna: JobSource | None = None,
         linkedin: JobSource | None = None,
+        indeed: JobSource | None = None,
     ) -> "JobSourceManager":
         """Create a manager with configured built-in sources.
 
@@ -55,7 +56,7 @@ class JobSourceManager:
         authorized adapter is supplied.
         """
         manager = cls()
-        for source in (adzuna, linkedin):
+        for source in (adzuna, linkedin, indeed):
             if source is not None:
                 manager.register(source)
         return manager
