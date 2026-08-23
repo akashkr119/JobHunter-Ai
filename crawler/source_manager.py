@@ -7,6 +7,7 @@ from typing import Callable, Iterable, Protocol
 
 from crawler.job_scraper import Job
 from crawler.source_health import SourceHealth, SourceStatus
+from crawler.source_reliability import SourceMetrics, SourceReliabilityTracker, retry_call
 
 
 class JobSource(Protocol):
@@ -31,16 +32,20 @@ class SourceRun:
 
 
 class JobSourceManager:
-    """Register, select and run job sources behind one stable API."""
+    """Register, select, retry and run job sources behind one stable API."""
 
-    def __init__(self, sources: Iterable[JobSource] | None = None) -> None:
+    def __init__(self, sources: Iterable[JobSource] | None = None, *, retry_attempts: int = 1, tracker: SourceReliabilityTracker | None = None) -> None:
+        if retry_attempts < 1:
+            raise ValueError("retry_attempts must be at least 1")
         self._sources: dict[str, JobSource] = {}
+        self.retry_attempts = retry_attempts
+        self.tracker = tracker or SourceReliabilityTracker()
         for source in sources or ():
             self.register(source)
 
     @classmethod
-    def with_builtin_sources(cls, *, adzuna=None, linkedin=None, indeed=None, naukri=None) -> "JobSourceManager":
-        manager = cls()
+    def with_builtin_sources(cls, *, adzuna=None, linkedin=None, indeed=None, naukri=None, retry_attempts: int = 1) -> "JobSourceManager":
+        manager = cls(retry_attempts=retry_attempts)
         for source in (adzuna, linkedin, indeed, naukri):
             if source is not None:
                 manager.register(source)
@@ -77,16 +82,21 @@ class JobSourceManager:
         results: list[SourceRun] = []
         for name in selected:
             source = self.get(name)
+            self.tracker.start(name)
             try:
-                jobs = tuple(source.search(query, **kwargs) or ())
+                jobs = tuple(retry_call(lambda: source.search(query, **kwargs) or (), attempts=self.retry_attempts))
+                self.tracker.success(name, len(jobs))
                 results.append(SourceRun(name, jobs))
             except Exception as exc:  # noqa: BLE001 - source isolation is intentional
+                self.tracker.failure(name, str(exc))
                 results.append(SourceRun(name, (), f"{type(exc).__name__}: {exc}"))
         return results
 
     def health(self, sources: Iterable[str] | None = None) -> tuple[SourceHealth, ...]:
-        """Run selected sources and expose operational health alongside jobs."""
         return tuple(result.health() for result in self.search_with_results(sources=sources))
+
+    def reliability(self, sources: Iterable[str] | None = None) -> tuple[SourceMetrics, ...]:
+        return self.tracker.snapshot(sources)
 
     @staticmethod
     def deduplicate(jobs: Iterable[Job]) -> list[Job]:
