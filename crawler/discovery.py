@@ -71,7 +71,12 @@ class JobDiscovery:
                 key = _dedup_key(job.apply_url)
                 if key not in grouped:
                     grouped[key] = (job, [run.source], display_url)
-                elif run.source not in grouped[key][1]:
-                    grouped[key][1].append(run.source)
+                else:
+                    existing_job, source_names, existing_url = grouped[key]
+                    if run.source not in source_names:
+                        source_names.append(run.source)
+                    if urlsplit(display_url).path.endswith("/") and not urlsplit(existing_url).path.endswith("/"):
+                        existing_url = display_url
+                    grouped[key] = (existing_job, source_names, existing_url)
         provenance = tuple(DiscoveryJob(job, tuple(source_names), display_url) for job, source_names, display_url in grouped.values())
         return DiscoveryResult(tuple(item.job for item in provenance), runs, provenance)
