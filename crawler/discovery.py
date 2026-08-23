@@ -23,9 +23,9 @@ def canonical_url(url: str) -> str:
 def _dedup_key(url: str) -> str:
     """Return a comparison key where equivalent trailing-slash URLs match."""
     value = canonical_url(url)
-    if value.endswith("/") and urlsplit(value).path != "/":
-        return value[:-1]
-    return value
+    parts = urlsplit(value)
+    path = parts.path.rstrip("/") or "/"
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
 @dataclass(frozen=True)
@@ -64,14 +64,14 @@ class JobDiscovery:
 
     def discover(self, query: str = "", *, sources: Iterable[str] | None = None, **kwargs) -> DiscoveryResult:
         runs = tuple(self.manager.search_with_results(query, sources=sources, **kwargs))
-        grouped: dict[str, tuple[Job, list[str]]] = {}
+        grouped: dict[str, tuple[Job, list[str], str]] = {}
         for run in runs:
             for job in run.jobs:
                 display_url = canonical_url(job.apply_url)
                 key = _dedup_key(job.apply_url)
                 if key not in grouped:
-                    grouped[key] = (job, [run.source])
+                    grouped[key] = (job, [run.source], display_url)
                 elif run.source not in grouped[key][1]:
                     grouped[key][1].append(run.source)
-        provenance = tuple(DiscoveryJob(job, tuple(source_names), canonical_url(job.apply_url)) for job, source_names in grouped.values())
+        provenance = tuple(DiscoveryJob(job, tuple(source_names), display_url) for job, source_names, display_url in grouped.values())
         return DiscoveryResult(tuple(item.job for item in provenance), runs, provenance)
