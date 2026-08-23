@@ -20,6 +20,14 @@ def canonical_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, urlencode(sorted(query)), ""))
 
 
+def _dedup_key(url: str) -> str:
+    """Return a comparison key where equivalent trailing-slash URLs match."""
+    value = canonical_url(url)
+    if value.endswith("/") and urlsplit(value).path != "/":
+        return value[:-1]
+    return value
+
+
 @dataclass(frozen=True)
 class DiscoveryJob:
     job: Job
@@ -59,10 +67,11 @@ class JobDiscovery:
         grouped: dict[str, tuple[Job, list[str]]] = {}
         for run in runs:
             for job in run.jobs:
-                key = canonical_url(job.apply_url)
+                display_url = canonical_url(job.apply_url)
+                key = _dedup_key(job.apply_url)
                 if key not in grouped:
                     grouped[key] = (job, [run.source])
                 elif run.source not in grouped[key][1]:
                     grouped[key][1].append(run.source)
-        provenance = tuple(DiscoveryJob(job, tuple(source_names), key) for key, (job, source_names) in grouped.items())
+        provenance = tuple(DiscoveryJob(job, tuple(source_names), canonical_url(job.apply_url)) for job, source_names in grouped.values())
         return DiscoveryResult(tuple(item.job for item in provenance), runs, provenance)
