@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Protocol
 
 from crawler.job_scraper import Job
+from crawler.source_config import SourceConfig
 from crawler.source_health import SourceHealth, SourceStatus
 from crawler.source_reliability import SourceMetrics, SourceReliabilityTracker, retry_call
 
@@ -34,18 +35,17 @@ class SourceRun:
 class JobSourceManager:
     """Register, select, retry and run job sources behind one stable API."""
 
-    def __init__(self, sources: Iterable[JobSource] | None = None, *, retry_attempts: int = 1, tracker: SourceReliabilityTracker | None = None) -> None:
-        if retry_attempts < 1:
-            raise ValueError("retry_attempts must be at least 1")
+    def __init__(self, sources: Iterable[JobSource] | None = None, *, retry_attempts: int = 1, tracker: SourceReliabilityTracker | None = None, config: SourceConfig | None = None) -> None:
+        self.config = config or SourceConfig(retry_attempts=retry_attempts)
+        self.retry_attempts = self.config.retry_attempts
         self._sources: dict[str, JobSource] = {}
-        self.retry_attempts = retry_attempts
         self.tracker = tracker or SourceReliabilityTracker()
         for source in sources or ():
             self.register(source)
 
     @classmethod
-    def with_builtin_sources(cls, *, adzuna=None, linkedin=None, indeed=None, naukri=None, retry_attempts: int = 1) -> "JobSourceManager":
-        manager = cls(retry_attempts=retry_attempts)
+    def with_builtin_sources(cls, *, adzuna=None, linkedin=None, indeed=None, naukri=None, retry_attempts: int = 1, config: SourceConfig | None = None) -> "JobSourceManager":
+        manager = cls(retry_attempts=retry_attempts, config=config)
         for source in (adzuna, linkedin, indeed, naukri):
             if source is not None:
                 manager.register(source)
@@ -65,6 +65,9 @@ class JobSourceManager:
     def names(self) -> tuple[str, ...]:
         return tuple(self._sources)
 
+    def selected_names(self) -> tuple[str, ...]:
+        return self.config.selected(self.names())
+
     def get(self, name: str) -> JobSource:
         key = str(name).strip().lower()
         try:
@@ -78,7 +81,7 @@ class JobSourceManager:
         return self.deduplicate(jobs)
 
     def search_with_results(self, query: str = "", sources: Iterable[str] | None = None, **kwargs) -> list[SourceRun]:
-        selected = self.names() if sources is None else tuple(str(name).strip().lower() for name in sources)
+        selected = self.selected_names() if sources is None else tuple(str(name).strip().lower() for name in sources)
         results: list[SourceRun] = []
         for name in selected:
             source = self.get(name)
