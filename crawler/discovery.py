@@ -13,10 +13,10 @@ _TRACKING_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "referrer", "s
 
 
 def canonical_url(url: str) -> str:
-    """Normalize a job URL for stable cross-source comparison."""
+    """Normalize a job URL while preserving a meaningful trailing slash."""
     parts = urlsplit(str(url).strip())
     query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key.lower() not in _TRACKING_PARAMS]
-    path = parts.path.rstrip("/") or "/"
+    path = parts.path or "/"
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, urlencode(sorted(query)), ""))
 
 
