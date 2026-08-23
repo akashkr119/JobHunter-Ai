@@ -35,12 +35,19 @@ def _source_health():
     return evaluate_source_health(configured,(),disabled)
 def _source_health_payload(health):
     return [{"source":item.source,"status":item.status.value,"message":item.message} for item in health]
+def _source_reliability():
+    provider=app.config.get("SOURCE_RELIABILITY_PROVIDER")
+    return tuple(provider()) if callable(provider) else ()
+def _source_reliability_payload(metrics):
+    return [{"source":m.source,"runs":m.runs,"successes":m.successes,"failures":m.failures,"jobs_returned":m.jobs_returned,"success_rate":m.success_rate,"last_started_at":m.last_started_at,"last_success_at":m.last_success_at,"last_failure_at":m.last_failure_at,"last_error":m.last_error} for m in metrics]
 @app.get("/")
 def home():return render_template("index.html")
 @app.get("/health")
 def health():return jsonify({"status":"healthy"})
 @app.get("/api/source-health")
 def source_health():return jsonify({"sources":_source_health_payload(_source_health())})
+@app.get("/api/source-reliability")
+def source_reliability():return jsonify({"sources":_source_reliability_payload(_source_reliability())})
 @app.get("/api/analytics")
 def analytics():
     db=Database(_database_path())
