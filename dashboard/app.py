@@ -3,6 +3,7 @@ import os
 from flask import Flask,jsonify,render_template,request
 from database.db import Database
 from matcher.recommendation_ranker import RecommendationRanker
+from crawler.source_health import SourceHealth,SourceStatus,evaluate_source_health
 app=Flask(__name__)
 def _database_path():return os.getenv("JOBHUNTER_DATABASE_PATH","jobs.db")
 def _rank(job):
@@ -26,10 +27,20 @@ def _bool_query(name):
     if value is None:return None
     if value.lower() not in ("true","false","1","0"):raise ValueError(f"{name} must be true or false")
     return value.lower() in ("true","1")
+def _source_health():
+    provider=app.config.get("SOURCE_HEALTH_PROVIDER")
+    if callable(provider):return tuple(provider())
+    configured=[name.strip().lower() for name in os.getenv("JOBHUNTER_SOURCES","").split(",") if name.strip()]
+    disabled=[name.strip().lower() for name in os.getenv("JOBHUNTER_DISABLED_SOURCES","").split(",") if name.strip()]
+    return evaluate_source_health(configured,(),disabled)
+def _source_health_payload(health):
+    return [{"source":item.source,"status":item.status.value,"message":item.message} for item in health]
 @app.get("/")
 def home():return render_template("index.html")
 @app.get("/health")
 def health():return jsonify({"status":"healthy"})
+@app.get("/api/source-health")
+def source_health():return jsonify({"sources":_source_health_payload(_source_health())})
 @app.get("/api/analytics")
 def analytics():
     db=Database(_database_path())
