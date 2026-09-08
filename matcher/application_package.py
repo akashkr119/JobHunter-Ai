@@ -29,14 +29,10 @@ def prepare_application_package(
     answers: Mapping[str, str] | None = None,
 ) -> ApplicationPackage:
     """Prepare application data; this function never submits an application."""
-    if not job_title.strip():
-        raise ValueError("job_title must not be empty")
-    if not company.strip():
-        raise ValueError("company must not be empty")
-    if not apply_url.strip():
-        raise ValueError("apply_url must not be empty")
-    if not resume_path.strip():
-        raise ValueError("resume_path must not be empty")
+    values = {"job_title": job_title, "company": company, "apply_url": apply_url, "resume_path": resume_path}
+    for name, value in values.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must not be empty")
 
     normalized_answers = tuple(
         (str(question).strip(), str(answer).strip())
