@@ -39,3 +39,20 @@ class Notifier:
         apply_url=get("apply_url","")
         if apply_url:lines.append(f"Apply: {apply_url}")
         return "\n".join(lines)
+    @staticmethod
+    def format_resume_review_alert(job,match_score,recommendations,application_status="PAUSED"):
+        """Format a review alert; it never modifies or submits an application."""
+        get=job.get if isinstance(job,dict) else lambda key,default="":getattr(job,key,default)
+        items=tuple(recommendations or ())
+        if not items:raise ValueError("At least one resume recommendation is required")
+        status=str(application_status or "PAUSED").strip().upper()
+        lines=["Resume Modification Required", "", f"Job: {get('title','New Job')} — {get('company','')}".strip(" —"), f"Match: {float(match_score):.0f}%"]
+        source=get("source","")
+        if source:lines.append(f"Source: {source}")
+        lines.extend(["", "Recommended resume changes:"])
+        for recommendation in items:
+            skill=getattr(recommendation,"skill","")
+            action=getattr(recommendation,"action",str(recommendation))
+            lines.append(f"• {skill}: {action}" if skill else f"• {action}")
+        lines.extend(["", f"Application status: {status}", "Action: Review and update the resume before applying"])
+        return "\n".join(lines)
