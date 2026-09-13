@@ -1,10 +1,10 @@
 # JobHunter AI
 
-JobHunter AI is an automated job discovery, matching, ranking, tracking, and alerting system. The target experience is resume-first: the user provides a resume and job preferences, JobHunter discovers relevant opportunities across supported job sources, compares each job with the resume, recommends the strongest matches, tracks applications, and sends smart alerts.
+JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and alerting system. It discovers relevant opportunities across supported job sources, compares jobs with the resume, recommends strong matches, tracks applications, and sends smart alerts.
 
 ## Core workflow — no Excel required
 
-Excel is **not required for the core workflow**. It may remain an optional import/export utility, but JobHunter's primary workflow is:
+Excel is **not required for the core workflow**. It may remain an optional import/export utility. The primary workflow is:
 
 ```text
 Resume + Preferences
@@ -19,76 +19,68 @@ Preference Filtering
         ↓
 Recommendation Ranking
         ↓
-Auto-Apply / Apply Assistance
+Resume Review / Application Preparation
         ↓
 Dashboard + Email / Telegram Alerts
 ```
 
-The system should discover opportunities from multiple legitimate/authorized sources and integrations. Planned sources include LinkedIn, Indeed, Naukri.com, Foundit, Glassdoor, Wellfound, Internshala, Shine, Cutshort, Adzuna, and company career/ATS pages. Access methods must respect each platform's API, integration, feed, and automation terms; where direct automated access is not authorized, JobHunter should provide a search/apply link or supported integration instead of bypassing platform controls.
+The system is source-adapter based and is designed to use legitimate/authorized APIs, feeds, company career/ATS pages, or supported search/apply links. It must not bypass login controls, CAPTCHAs, or platform restrictions.
 
-## Resume-first matching
+## Current project status
 
-JobHunter parses the user's resume and evaluates each discovered job against:
+**V1 is in the hardening/release-validation phase, with the roadmap's major foundation milestones implemented.** The current work is focused on making the remaining application-preparation and resume-review workflow safe, deterministic, tested, and production-ready before any feature is marked complete.
 
-- Required and preferred skills
-- Relevant experience
-- Job title / role alignment
-- Location and work mode
-- User target-profile preferences
-- Desired and excluded keywords
-- Job freshness and lifecycle state
+### Implemented
 
-The existing recommendation engine combines these signals into a job recommendation score.
+- Resume parsing for TXT, Markdown, PDF, and DOCX.
+- Resume-to-job skill gap analysis with matched/missing skills and match ratio.
+- Conservative resume improvement recommendations that never invent qualifications.
+- Job preferences / target-profile filtering.
+- Weighted recommendation ranking with explanation/breakdown.
+- Multi-source discovery architecture with source adapters.
+- Authorized/opt-in source integrations including Adzuna, LinkedIn, Indeed, and Naukri adapters.
+- Greenhouse, Lever, Workday, and SmartRecruiters ATS discovery.
+- Cross-source job deduplication and provenance tracking.
+- Source configuration, freshness, failure history, health, reliability metrics, and alerts.
+- Application tracking, saved jobs, notes, follow-up reminders, and dashboard analytics.
+- Responsive dashboard with loading/empty/error states and safe action tracking.
+- Production runner with scheduling, locking, run history, failure handling, and cleanup.
+- Configurable Email/Telegram notification thresholds.
+- Safe application-preparation package: structured job/resume/application information can be prepared for review without submitting an application.
+- Resume review alerts and a deterministic review decision helper. Explicitly confirmed skills can make modification required; missing skills are never treated as evidence or added automatically.
 
-## Auto-apply threshold — planned feature
+## Safety boundary
 
-A core future capability is **automatic application for strong matches**.
+JobHunter **does not automatically submit applications merely because a job has a high match score**. Application submission remains a separate, explicitly authorized workflow and must use supported application flows.
 
-- When a job's validated resume/skill match is **above 60%**, the job becomes eligible for automatic application.
-- The system must still verify that the job passes the user's preference filters and safety/eligibility checks before applying.
-- Auto-apply must use the user's configured resume and application information and must never fabricate qualifications, experience, answers, or documents.
-- If an application requires information that JobHunter does not have or cannot safely determine, it should pause and request user input rather than guessing.
-- Every automatic application must be recorded with the job URL, source, timestamp, resume version, match score, and application result.
-- Duplicate applications must be prevented.
+The system must never fabricate qualifications, experience, answers, documents, or skills. If required information is missing or cannot be safely determined, the workflow must pause for user input.
 
-The 60% value is a **user-configurable threshold**, with 60% as the initial default target. The implementation must not automatically submit applications merely because a scraper reports a high score; application submission requires a supported and authorized application flow.
+The resume-review workflow is currently **review-only**: it can identify and explain recommended/required modifications, but it does not silently modify the user's resume or submit applications.
 
-## Resume improvement / modification alerts — planned feature
+## Recommendation ranking
 
-Before applying, JobHunter should compare the job requirements with the current resume and determine whether the resume should be improved for that particular role.
+The recommendation engine combines multiple signals into a unified 0–100 score. The current weighting is:
 
-When meaningful resume modifications could improve the application, JobHunter should:
+- Resume / skill match — 50%
+- Target preference alignment — 25%
+- Freshness — 10%
+- Application state — 10%
+- Priority / lifecycle — 5%
 
-1. Identify the missing or weak skills, keywords, experience evidence, or project details.
-2. Explain exactly what should be improved.
-3. Generate a resume-improvement recommendation without inventing experience.
-4. Send an **Email and/or Telegram notification** telling the user that the resume needs modification.
-5. Include the job title, company/source, match score, missing requirements, suggested changes, and application status.
-6. Allow the user to approve/update the resume before an application is submitted when the modification is important.
+Recommendations include an explanation/breakdown and labels such as **Top Pick**, **Strong Match**, **Good Match**, and **Consider**.
 
-Example notification:
+## Resume review and application preparation
 
-```text
-Resume Modification Required
+Before applying, JobHunter can compare the job requirements with the current resume and identify meaningful gaps or improvement opportunities.
 
-Job: Senior QA Automation Engineer
-Match: 67%
-Source: Job Platform
+The review workflow distinguishes between:
 
-Recommended resume changes:
-• Highlight Selenium automation experience
-• Add Python/pytest projects if they accurately reflect your experience
-• Make API testing experience more visible
-• Add relevant automotive testing keywords where truthful
+- **Resume improvement recommended** — useful changes are suggested, but the application does not necessarily need to pause.
+- **Resume modification required** — the available evidence indicates that an important truthful change should be reviewed before proceeding.
 
-Action: Update resume before applying
-```
-
-JobHunter must distinguish between **"resume improvement recommended"** and **"resume modification required"**. A strong match can still be auto-applied when no material modification is needed; otherwise the configured workflow should pause and notify the user.
+Application preparation creates a structured, reviewable package containing the job, resume path, cover letter, and optional application answers. It intentionally has **no automatic submission operation**.
 
 ## Multi-source job discovery
-
-The discovery architecture is source-adapter based:
 
 ```text
 JobSource Manager
@@ -100,18 +92,18 @@ JobSource Manager
              ↓
        Unified JobListing
              ↓
-       Deduplication
+       Deduplication + Provenance
              ↓
        Matching + Ranking
+             ↓
+       Review / Tracking / Alerts
 ```
 
-Each source should normalize its results into the same job model so LinkedIn, Indeed, Naukri.com, company ATS pages, and other sources can participate in the same ranking, tracking, notification, and application workflow.
+Each source normalizes results into the common job model so supported sources can participate in the same ranking, tracking, notification, and review workflow.
 
 ## Automated production runner
 
 The production runner performs scheduled scans, prevents duplicate runner instances with a lock, records run history, handles failures, and cleans up on shutdown.
-
-For notifications, configure Email and/or Telegram. Notification thresholds can be configured independently from the auto-apply threshold.
 
 Important production settings include:
 
@@ -148,16 +140,26 @@ JOBHUNTER_TELEGRAM_CHAT_ID
 | 3 | Recommendation Ranking Engine | ✅ Complete |
 | 4 | Dashboard Finalization | ✅ Complete |
 | 5 | Automated Production Runner | ✅ Complete |
-| 6 | V1 Hardening & Release | 🧪 Release validation |
-| 7 | Multi-Source Job Discovery | 🚧 Planned |
-| 8 | Resume Review & Modification Alerts | 🚧 Planned |
-| 9 | Safe Auto-Apply Workflow | 🚧 Planned |
+| 6 | V1 Hardening & Release | 🚧 In progress |
+| 7 | Multi-Source Job Discovery | ✅ Implemented |
+| 8 | Resume Review & Modification Alerts | ✅ Implemented — review-only |
+| 9 | Safe Auto-Apply Workflow | 🚧 Not yet complete |
+
+### Current position: Milestone 14
+
+Milestone 14 has progressed through three focused foundations:
+
+1. **Resume skill-gap analysis** — implemented and tested.
+2. **Conservative resume improvement recommendations** — implemented and tested.
+3. **Safe application preparation + resume review alerts/decision logic** — implemented and tested; review-only, with no automatic submission or silent resume modification.
+
+The next work should focus on completing the remaining safe application-flow pieces and their authorization, duplicate-prevention, missing-information, notification, and failure-path tests. Only after those gates pass should the auto-apply milestone be marked complete.
 
 ## Current capabilities
 
-JobHunter AI provides career-page and ATS discovery, Greenhouse/Lever/Workday/SmartRecruiters scraping, resume parsing, weighted skill matching, job preferences, recommendation ranking, lifecycle detection, cross-source deduplication, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, and smart Email/Telegram alerts.
+JobHunter AI currently provides career-page and ATS discovery, multi-source adapters, resume parsing, skill-gap analysis, conservative resume improvement guidance, weighted recommendation ranking, preference filtering, lifecycle detection, cross-source deduplication/provenance, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, production execution, source health/reliability monitoring, and smart Email/Telegram alerts.
 
-Auto-apply and resume-modification detection are planned capabilities and are **not claimed as implemented until their application-flow and safety tests pass**.
+Automatic application submission is **not claimed as complete**. The current application-preparation and resume-review work is intentionally review-first and safety constrained.
 
 See `docs/PRODUCTION.md` for configuration, operations, notifications, and release validation. See `CHANGELOG.md` for release notes.
 
@@ -169,7 +171,7 @@ JobHunter-Ai/
 ├── crawler/         # Career discovery and ATS/job scrapers
 ├── dashboard/       # Flask dashboard and API
 ├── database/        # SQLite persistence and migrations
-├── matcher/         # Skill, preference, priority and recommendation logic
+├── matcher/         # Skill, preference, priority, gap and recommendation logic
 ├── notifier/        # Email and Telegram notifications
 ├── runner/          # Production lifecycle runner
 ├── scheduler/       # Pipeline orchestration and scheduling
@@ -191,4 +193,4 @@ pytest
 
 The release gate requires green CI plus the production smoke checklist. After both pass, the repository can be tagged `v1.0.0`.
 
-New auto-apply and resume-review functionality must also have dedicated tests covering authorization, duplicate prevention, missing information, notification delivery, and safe failure behavior before being marked complete.
+Application-preparation, resume-review, and future auto-apply functionality must have dedicated tests covering authorization, duplicate prevention, missing information, notification delivery, and safe failure behavior before being marked complete.
