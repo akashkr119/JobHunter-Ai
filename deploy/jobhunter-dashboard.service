@@ -5,10 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=akashkumar_his
-WorkingDirectory=%h/JobHunter-Ai
-EnvironmentFile=-%h/JobHunter-Ai/.env
-ExecStart=%h/JobHunter-Ai/.venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 1 --threads 4 --timeout 600 dashboard.app:app
+User=__JOBHUNTER_USER__
+WorkingDirectory=__JOBHUNTER_DIR__
+EnvironmentFile=-__JOBHUNTER_DIR__/.env
+ExecStart=__JOBHUNTER_DIR__/.venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 1 --threads 4 --timeout 600 dashboard.app:app
 Restart=always
 RestartSec=5
 
