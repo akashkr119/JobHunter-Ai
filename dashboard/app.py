@@ -1,108 +1,250 @@
 """Dashboard entry point for JobHunter-AI."""
+from dataclasses import replace
 import os
-from flask import Flask,jsonify,render_template,request
+from pathlib import Path
+from flask import Flask, jsonify, render_template, request
 from database.db import Database
 from matcher.recommendation_ranker import RecommendationRanker
-from crawler.source_health import SourceHealth,SourceStatus,evaluate_source_health
-app=Flask(__name__)
-def _database_path():return os.getenv("JOBHUNTER_DATABASE_PATH","jobs.db")
+from crawler.source_health import evaluate_source_health
+from config.settings import Settings
+from main import run_once
+from dashboard.user_config import dashboard_settings, dashboard_state, store_resume, update_preferences
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024 + 1024 * 1024
+
+
+def _database_path():
+    return os.getenv("JOBHUNTER_DATABASE_PATH", "jobs.db")
+
+
 def _rank(job):
-    if job is None:return None
-    result=dict(job);result.update(RecommendationRanker.score(result));return result
-def _list_jobs(min_score=0.0,limit=100,status=None,saved=None,active=None,follow_up=None):
-    db=Database(_database_path())
+    if job is None:
+        return None
+    result = dict(job)
+    result.update(RecommendationRanker.score(result))
+    return result
+
+
+def _list_jobs(min_score=0.0, limit=100, status=None, saved=None, active=None, follow_up=None):
+    db = Database(_database_path())
     try:
-        rows=db.list_jobs(min_score=min_score,limit=500,status=status,saved=saved,active=active,follow_up=follow_up);return RecommendationRanker.rank(rows)[:int(limit)]
-    finally:db.close()
+        rows = db.list_jobs(min_score=min_score, limit=500, status=status, saved=saved, active=active, follow_up=follow_up)
+        return RecommendationRanker.rank(rows)[:int(limit)]
+    finally:
+        db.close()
+
+
 def _job_summary(job):
-    keys=("id","title","company","location","platform","match_score","preference_score","preference_match","preference_details","recommendation_score","recommendation_label","recommendation_breakdown","priority_score","priority_label","matched_skills","missing_skills","required_skills","preferred_skills","matched_required_skills","missing_required_skills","application_status","status_updated_at","applied_at","follow_up_days","follow_up_completed","follow_up_status","follow_up_due_at","follow_up_days_remaining","is_saved","notes","is_active","last_seen_at","apply_url","discovered_at","updated_at")
-    return {k:job.get(k) for k in keys}
+    keys = ("id", "title", "company", "location", "platform", "match_score", "preference_score", "preference_match", "preference_details", "recommendation_score", "recommendation_label", "recommendation_breakdown", "priority_score", "priority_label", "matched_skills", "missing_skills", "required_skills", "preferred_skills", "matched_required_skills", "missing_required_skills", "application_status", "status_updated_at", "applied_at", "follow_up_days", "follow_up_completed", "follow_up_status", "follow_up_due_at", "follow_up_days_remaining", "is_saved", "notes", "is_active", "last_seen_at", "apply_url", "discovered_at", "updated_at")
+    return {k: job.get(k) for k in keys}
+
+
 def _recommendation_analytics(rows):
-    ranked=RecommendationRanker.rank(rows);active=[j for j in ranked if j.get("is_active",True)];labels={"top_pick":0,"strong_match":0,"good_match":0,"consider":0}
-    for job in active:labels[job["recommendation_label"]]=labels.get(job["recommendation_label"],0)+1
-    scores=[j["recommendation_score"] for j in active]
-    return {"average_recommendation_score":round(sum(scores)/len(scores),1) if scores else 0.0,"top_picks":labels["top_pick"],"strong_matches":labels["strong_match"],"good_matches":labels["good_match"],"consider":labels["consider"],"recommendation_labels":labels}
+    ranked = RecommendationRanker.rank(rows)
+    active = [j for j in ranked if j.get("is_active", True)]
+    labels = {"top_pick": 0, "strong_match": 0, "good_match": 0, "consider": 0}
+    for job in active:
+        labels[job["recommendation_label"]] = labels.get(job["recommendation_label"], 0) + 1
+    scores = [j["recommendation_score"] for j in active]
+    return {"average_recommendation_score": round(sum(scores) / len(scores), 1) if scores else 0.0, "top_picks": labels["top_pick"], "strong_matches": labels["strong_match"], "good_matches": labels["good_match"], "consider": labels["consider"], "recommendation_labels": labels}
+
+
 def _bool_query(name):
-    value=request.args.get(name)
-    if value is None:return None
-    if value.lower() not in ("true","false","1","0"):raise ValueError(f"{name} must be true or false")
-    return value.lower() in ("true","1")
+    value = request.args.get(name)
+    if value is None:
+        return None
+    if value.lower() not in ("true", "false", "1", "0"):
+        raise ValueError(f"{name} must be true or false")
+    return value.lower() in ("true", "1")
+
+
 def _source_health():
-    provider=app.config.get("SOURCE_HEALTH_PROVIDER")
-    if callable(provider):return tuple(provider())
-    configured=[name.strip().lower() for name in os.getenv("JOBHUNTER_SOURCES","").split(",") if name.strip()]
-    disabled=[name.strip().lower() for name in os.getenv("JOBHUNTER_DISABLED_SOURCES","").split(",") if name.strip()]
-    return evaluate_source_health(configured,(),disabled)
+    provider = app.config.get("SOURCE_HEALTH_PROVIDER")
+    if callable(provider):
+        return tuple(provider())
+    configured = [name.strip().lower() for name in os.getenv("JOBHUNTER_SOURCES", "").split(",") if name.strip()]
+    disabled = [name.strip().lower() for name in os.getenv("JOBHUNTER_DISABLED_SOURCES", "").split(",") if name.strip()]
+    return evaluate_source_health(configured, (), disabled)
+
+
 def _source_health_payload(health):
-    return [{"source":item.source,"status":item.status.value,"message":item.message} for item in health]
+    return [{"source": item.source, "status": item.status.value, "message": item.message} for item in health]
+
+
 def _source_reliability():
-    provider=app.config.get("SOURCE_RELIABILITY_PROVIDER")
+    provider = app.config.get("SOURCE_RELIABILITY_PROVIDER")
     return tuple(provider()) if callable(provider) else ()
+
+
 def _source_reliability_payload(metrics):
-    return [{"source":m.source,"runs":m.runs,"successes":m.successes,"failures":m.failures,"jobs_returned":m.jobs_returned,"success_rate":m.success_rate,"last_started_at":m.last_started_at,"last_success_at":m.last_success_at,"last_failure_at":m.last_failure_at,"last_error":m.last_error} for m in metrics]
+    return [{"source": m.source, "runs": m.runs, "successes": m.successes, "failures": m.failures, "jobs_returned": m.jobs_returned, "success_rate": m.success_rate, "last_started_at": m.last_started_at, "last_success_at": m.last_success_at, "last_failure_at": m.last_failure_at, "last_error": m.last_error} for m in metrics]
+
+
 @app.get("/")
-def home():return render_template("index.html")
+def home():
+    return render_template("index.html")
+
+
 @app.get("/health")
-def health():return jsonify({"status":"healthy"})
+def health():
+    return jsonify({"status": "healthy"})
+
+
+@app.get("/api/setup")
+def setup():
+    return jsonify(dashboard_state())
+
+
+@app.post("/api/resume")
+def upload_resume():
+    try:
+        result = store_resume(request.files.get("resume"))
+    except (ValueError, RuntimeError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"message": "Resume uploaded and activated", "resume": result}), 201
+
+
+@app.patch("/api/preferences")
+def preferences():
+    try:
+        return jsonify(update_preferences(request.get_json(silent=True) or {}))
+    except (ValueError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/discovery")
+def discovery():
+    payload = request.get_json(silent=True) or {}
+    try:
+        state = update_preferences({"career_urls": payload.get("career_urls")}) if "career_urls" in payload else dashboard_state()
+        settings = dashboard_settings()
+        if "min_match_score" in payload or any(k in payload for k in ("target_titles", "preferred_locations", "work_modes", "desired_keywords", "excluded_keywords")):
+            state = update_preferences({k: payload[k] for k in ("min_match_score", "target_titles", "preferred_locations", "work_modes", "desired_keywords", "excluded_keywords", "career_urls") if k in payload})
+            settings = dashboard_settings()
+        urls = tuple(state.get("career_urls") or [])
+        if not urls:
+            return jsonify({"error": "At least one career URL is required", "setup": state}), 400
+        if not Path(settings.resume_path).is_file():
+            return jsonify({"error": "Upload a resume before starting discovery", "setup": state}), 400
+        summary = run_once(list(urls), settings)
+        return jsonify({"summary": summary, "setup": dashboard_state()})
+    except (ValueError, OSError, RuntimeError) as exc:
+        return jsonify({"error": str(exc), "setup": dashboard_state()}), 400
+
+
 @app.get("/api/source-health")
-def source_health():return jsonify({"sources":_source_health_payload(_source_health())})
+def source_health():
+    return jsonify({"sources": _source_health_payload(_source_health())})
+
+
 @app.get("/api/source-reliability")
-def source_reliability():return jsonify({"sources":_source_reliability_payload(_source_reliability())})
+def source_reliability():
+    return jsonify({"sources": _source_reliability_payload(_source_reliability())})
+
+
 @app.get("/api/analytics")
 def analytics():
-    db=Database(_database_path())
+    db = Database(_database_path())
     try:
-        data=db.get_analytics();rows=db.list_jobs(limit=500);data.update(_recommendation_analytics(rows));return jsonify(data)
-    finally:db.close()
+        data = db.get_analytics()
+        rows = db.list_jobs(limit=500)
+        data.update(_recommendation_analytics(rows))
+        return jsonify(data)
+    finally:
+        db.close()
+
+
 @app.get("/api/jobs")
 def jobs():
-    try:min_score=float(request.args.get("min_score",0));limit=int(request.args.get("limit",100));saved=_bool_query("saved");active=_bool_query("active")
-    except ValueError as exc:return jsonify({"error":str(exc) if "must be true or false" in str(exc) else "min_score must be numeric and limit must be an integer"}),400
-    if not 0<=min_score<=100:return jsonify({"error":"min_score must be between 0 and 100"}),400
-    if not 1<=limit<=500:return jsonify({"error":"limit must be between 1 and 500"}),400
-    status=request.args.get("status") or None;follow_up=request.args.get("follow_up") or None
-    try:recommendations=[_job_summary(j) for j in _list_jobs(min_score,limit,status,saved,active,follow_up)]
-    except ValueError as exc:return jsonify({"error":str(exc),"allowed_statuses":Database.APPLICATION_STATUSES}),400
-    return jsonify({"count":len(recommendations),"jobs":recommendations})
+    try:
+        min_score = float(request.args.get("min_score", 0))
+        limit = int(request.args.get("limit", 100))
+        saved = _bool_query("saved")
+        active = _bool_query("active")
+    except ValueError as exc:
+        return jsonify({"error": str(exc) if "must be true or false" in str(exc) else "min_score must be numeric and limit must be an integer"}), 400
+    if not 0 <= min_score <= 100:
+        return jsonify({"error": "min_score must be between 0 and 100"}), 400
+    if not 1 <= limit <= 500:
+        return jsonify({"error": "limit must be between 1 and 500"}), 400
+    status = request.args.get("status") or None
+    follow_up = request.args.get("follow_up") or None
+    try:
+        recommendations = [_job_summary(j) for j in _list_jobs(min_score, limit, status, saved, active, follow_up)]
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "allowed_statuses": Database.APPLICATION_STATUSES}), 400
+    return jsonify({"count": len(recommendations), "jobs": recommendations})
+
+
 @app.get("/api/jobs/<int:job_id>")
 def job_detail(job_id):
-    db=Database(_database_path())
-    try:job=db.get_job(job_id)
-    finally:db.close()
-    if job is None:return jsonify({"error":"Job not found"}),404
+    db = Database(_database_path())
+    try:
+        job = db.get_job(job_id)
+    finally:
+        db.close()
+    if job is None:
+        return jsonify({"error": "Job not found"}), 404
     return jsonify(_rank(job))
+
+
 @app.patch("/api/jobs/<int:job_id>/status")
 def update_job_status(job_id):
-    payload=request.get_json(silent=True) or {};status=payload.get("status")
-    if not status:return jsonify({"error":"status is required","allowed_statuses":Database.APPLICATION_STATUSES}),400
-    db=Database(_database_path())
+    payload = request.get_json(silent=True) or {}
+    status = payload.get("status")
+    if not status:
+        return jsonify({"error": "status is required", "allowed_statuses": Database.APPLICATION_STATUSES}), 400
+    db = Database(_database_path())
     try:
-        try:job=db.update_application_status(job_id,status)
-        except ValueError as exc:return jsonify({"error":str(exc),"allowed_statuses":Database.APPLICATION_STATUSES}),400
-        except KeyError:return jsonify({"error":"Job not found"}),404
-    finally:db.close()
+        try:
+            job = db.update_application_status(job_id, status)
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "allowed_statuses": Database.APPLICATION_STATUSES}), 400
+        except KeyError:
+            return jsonify({"error": "Job not found"}), 404
+    finally:
+        db.close()
     return jsonify(_job_summary(_rank(job)))
+
+
 @app.patch("/api/jobs/<int:job_id>/follow-up")
 def update_follow_up(job_id):
-    payload=request.get_json(silent=True) or {}
-    if "follow_up_days" not in payload and "completed" not in payload:return jsonify({"error":"follow_up_days or completed is required"}),400
-    db=Database(_database_path())
+    payload = request.get_json(silent=True) or {}
+    if "follow_up_days" not in payload and "completed" not in payload:
+        return jsonify({"error": "follow_up_days or completed is required"}), 400
+    db = Database(_database_path())
     try:
-        try:job=db.update_follow_up(job_id,days=payload.get("follow_up_days") if "follow_up_days" in payload else None,completed=payload.get("completed") if "completed" in payload else None)
-        except (ValueError,TypeError) as exc:return jsonify({"error":str(exc)}),400
-        except KeyError:return jsonify({"error":"Job not found"}),404
-    finally:db.close()
+        try:
+            job = db.update_follow_up(job_id, days=payload.get("follow_up_days") if "follow_up_days" in payload else None, completed=payload.get("completed") if "completed" in payload else None)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        except KeyError:
+            return jsonify({"error": "Job not found"}), 404
+    finally:
+        db.close()
     return jsonify(_job_summary(_rank(job)))
+
+
 @app.patch("/api/jobs/<int:job_id>/tracking")
 def update_job_tracking(job_id):
-    payload=request.get_json(silent=True) or {}
-    if "saved" not in payload and "notes" not in payload:return jsonify({"error":"saved or notes is required"}),400
-    if "saved" in payload and not isinstance(payload["saved"],bool):return jsonify({"error":"saved must be a boolean"}),400
-    db=Database(_database_path())
+    payload = request.get_json(silent=True) or {}
+    if "saved" not in payload and "notes" not in payload:
+        return jsonify({"error": "saved or notes is required"}), 400
+    if "saved" in payload and not isinstance(payload["saved"], bool):
+        return jsonify({"error": "saved must be a boolean"}), 400
+    db = Database(_database_path())
     try:
-        try:job=db.update_job_tracking(job_id,saved=payload.get("saved") if "saved" in payload else None,notes=payload.get("notes") if "notes" in payload else None)
-        except ValueError as exc:return jsonify({"error":str(exc)}),400
-        except KeyError:return jsonify({"error":"Job not found"}),404
-    finally:db.close()
+        try:
+            job = db.update_job_tracking(job_id, saved=payload.get("saved") if "saved" in payload else None, notes=payload.get("notes") if "notes" in payload else None)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except KeyError:
+            return jsonify({"error": "Job not found"}), 404
+    finally:
+        db.close()
     return jsonify(_job_summary(_rank(job)))
-if __name__=="__main__":app.run(host="0.0.0.0",port=5000,debug=True)
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
