@@ -1,12 +1,10 @@
 """Dashboard entry point for JobHunter-AI."""
-from dataclasses import replace
 import os
 from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 from database.db import Database
 from matcher.recommendation_ranker import RecommendationRanker
 from crawler.source_health import evaluate_source_health
-from config.settings import Settings
 from main import run_once
 from dashboard.user_config import dashboard_settings, dashboard_state, store_resume, update_preferences
 
@@ -117,11 +115,17 @@ def preferences():
 def discovery():
     payload = request.get_json(silent=True) or {}
     try:
-        state = update_preferences({"career_urls": payload.get("career_urls")}) if "career_urls" in payload else dashboard_state()
+        if "career_urls" in payload:
+            state = update_preferences({"career_urls": payload.get("career_urls")})
+        else:
+            state = dashboard_state()
+        preference_fields = ("min_match_score", "target_titles", "preferred_locations", "work_modes", "desired_keywords", "excluded_keywords")
+        supplied_preferences = {k: payload[k] for k in preference_fields if k in payload}
+        if supplied_preferences:
+            if "career_urls" in payload:
+                supplied_preferences["career_urls"] = payload["career_urls"]
+            state = update_preferences(supplied_preferences)
         settings = dashboard_settings()
-        if "min_match_score" in payload or any(k in payload for k in ("target_titles", "preferred_locations", "work_modes", "desired_keywords", "excluded_keywords")):
-            state = update_preferences({k: payload[k] for k in ("min_match_score", "target_titles", "preferred_locations", "work_modes", "desired_keywords", "excluded_keywords", "career_urls") if k in payload})
-            settings = dashboard_settings()
         urls = tuple(state.get("career_urls") or [])
         if not urls:
             return jsonify({"error": "At least one career URL is required", "setup": state}), 400
