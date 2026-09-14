@@ -4,7 +4,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 
 ## Current project status
 
-**V1 remains in the hardening/release-validation phase. Milestone 14 has completed its current safety foundations through the explicit application-submission authorization gate.** The remaining work is the supported submission-flow implementation and its duplicate-prevention, missing-information, notification-delivery, and failure-path validation. Automatic application submission is **not yet complete**.
+**V1 remains in the hardening/release-validation phase. Milestone 14.8 now has a safe submission-executor foundation.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, blocks duplicate execution within the executor lifecycle, and keeps external interaction behind a supported adapter interface. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -17,6 +17,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 - Safe application-preparation package with review-only resume modification guidance.
 - Explicit application authorization: prepared applications start pending and require explicit user approval.
 - Explicit submission gate: only an approved authorization with a valid approval ID can produce a submission permit tied to the exact prepared package.
+- Safe submission executor foundation: stable package fingerprinting, adapter boundary, explicit result status, duplicate blocking, and retry-safe failure behavior.
 
 ## Safety boundary
 
@@ -26,7 +27,7 @@ The system must never fabricate qualifications, experience, answers, documents, 
 
 The resume-review workflow is **review-only**: it identifies recommended/required modifications but does not silently modify the user's resume.
 
-The submission gate itself does **not** contact or submit to any external website.
+The submission executor does not bypass login controls, CAPTCHAs, or platform restrictions. External submission is possible only through a future supported adapter supplied by the caller.
 
 ## Milestone 14 roadmap
 
@@ -39,17 +40,15 @@ The submission gate itself does **not** contact or submit to any external websit
 | 14.5 | Application approval notifications | ✅ Complete |
 | 14.6 | Explicit application authorization | ✅ Complete |
 | 14.7 | Submission-authorization gate | ✅ Complete |
-| 14.8 | Safe submission executor foundation | 🚧 Next |
-| 14.9 | Duplicate prevention / submission state persistence | 🚧 Pending |
+| 14.8 | Safe submission executor foundation | ✅ Complete |
+| 14.9 | Persistent duplicate prevention / submission state | 🚧 Next |
 | 14.10 | Missing-information and failure/retry handling | 🚧 Pending |
 | 14.11 | Supported ATS submission adapters | 🚧 Pending |
 | 14.12 | End-to-end submission validation | 🚧 Pending |
 
-### Current position: Milestone 14.8
+### Current position: Milestone 14.9
 
-The next implementation step is the **safe submission executor foundation**. It will accept only a valid `SubmissionPermit`, identify the exact application package by a stable fingerprint, block duplicate execution, return explicit success/failure results, and keep the external interaction behind a supported adapter interface.
-
-No login bypass, CAPTCHA bypass, protected-page scraping, or automatic submission should be introduced without an explicit supported integration and dedicated safety tests.
+The next implementation step is **persistent duplicate prevention and submission state**. The in-memory executor guard must be backed by durable application state so a restart cannot accidentally submit the same prepared package twice.
 
 ## Core workflow — no Excel required
 
@@ -74,6 +73,8 @@ Explicit User Authorization
         ↓
 Submission Permit
         ↓
+Safe Submission Executor
+        ↓
 Supported Submission Adapter
         ↓
 Application Tracking + Alerts
@@ -87,6 +88,6 @@ Run the full automated suite with:
 pytest
 ```
 
-The release gate requires green CI plus the production smoke checklist. Automatic application submission must not be marked complete until authorization, duplicate prevention, missing-information handling, notification delivery, supported-flow behavior, and safe failure paths have dedicated automated coverage.
+The release gate requires green CI plus the production smoke checklist. Automatic application submission must not be marked complete until authorization, durable duplicate prevention, missing-information handling, notification delivery, supported-flow behavior, and safe failure paths have dedicated automated coverage.
 
 See `docs/PRODUCTION.md` for configuration and operations. See `CHANGELOG.md` for release notes.
