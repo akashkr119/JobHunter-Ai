@@ -13,6 +13,7 @@ from typing import Protocol
 
 from matcher.application_authorization import ApplicationAuthorization, AuthorizationDecision
 from matcher.application_package import ApplicationPackage
+from matcher.submission_state import SubmissionStateStore
 
 
 class SubmissionStatus(str, Enum):
@@ -76,19 +77,28 @@ def authorize_application_submission(
 
 
 class SubmissionExecutor:
-    """Execute each exact package at most once through a supplied adapter."""
+    """Execute each exact package at most once with durable idempotency state."""
 
-    def __init__(self, adapter: SubmissionAdapter) -> None:
+    def __init__(self, adapter: SubmissionAdapter, state_store: SubmissionStateStore | None = None) -> None:
         self._adapter = adapter
+        self._state_store = state_store or SubmissionStateStore()
         self._submitted_fingerprints: set[str] = set()
 
     def submit(self, permit: SubmissionPermit) -> SubmissionResult:
         fingerprint = permit.package_fingerprint
         if fingerprint in self._submitted_fingerprints:
             raise RuntimeError("Application package has already been submitted")
+
+        self._state_store.claim(fingerprint, permit.approval_id)
         try:
             message = self._adapter.submit(permit.package)
         except Exception as exc:
+            self._state_store.mark_failed(fingerprint, str(exc))
             return SubmissionResult(SubmissionStatus.FAILED, fingerprint, str(exc))
+
+        self._state_store.mark_submitted(fingerprint, str(message))
         self._submitted_fingerprints.add(fingerprint)
         return SubmissionResult(SubmissionStatus.SUBMITTED, fingerprint, str(message))
+
+    def close(self) -> None:
+        self._state_store.close()
