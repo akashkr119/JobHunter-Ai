@@ -48,6 +48,7 @@ The system is source-adapter based and is designed to use legitimate/authorized 
 - Configurable Email/Telegram notification thresholds.
 - Safe application-preparation package: structured job/resume/application information can be prepared for review without submitting an application.
 - Resume review alerts and a deterministic review decision helper. Explicitly confirmed skills can make modification required; missing skills are never treated as evidence or added automatically.
+- Explicit application authorization state: every prepared application starts pending and can become submittable only after an explicit user approval decision.
 
 ## Safety boundary
 
@@ -56,6 +57,8 @@ JobHunter **does not automatically submit applications merely because a job has 
 The system must never fabricate qualifications, experience, answers, documents, or skills. If required information is missing or cannot be safely determined, the workflow must pause for user input.
 
 The resume-review workflow is currently **review-only**: it can identify and explain recommended/required modifications, but it does not silently modify the user's resume or submit applications.
+
+Application authorization is also explicit: a pending approval request cannot submit, a rejection cannot submit, and only an approved application package may proceed to a future supported submission step.
 
 ## Recommendation ranking
 
@@ -79,6 +82,8 @@ The review workflow distinguishes between:
 - **Resume modification required** — the available evidence indicates that an important truthful change should be reviewed before proceeding.
 
 Application preparation creates a structured, reviewable package containing the job, resume path, cover letter, and optional application answers. It intentionally has **no automatic submission operation**.
+
+Application authorization creates a pending approval request for that package. The system records the request and explicit decision timestamps, and exposes `can_submit` only for an approved package. Notification delivery and the eventual supported submission action remain separate workflow steps.
 
 ## Multi-source job discovery
 
@@ -140,26 +145,27 @@ JOBHUNTER_TELEGRAM_CHAT_ID
 | 3 | Recommendation Ranking Engine | ✅ Complete |
 | 4 | Dashboard Finalization | ✅ Complete |
 | 5 | Automated Production Runner | ✅ Complete |
-| 6 | V1 Hardening & Release | 🚧 In progress |
+| 6 | V1 Hardening & Release | 🧪 Release validation |
 | 7 | Multi-Source Job Discovery | ✅ Implemented |
 | 8 | Resume Review & Modification Alerts | ✅ Implemented — review-only |
 | 9 | Safe Auto-Apply Workflow | 🚧 Not yet complete |
 
 ### Current position: Milestone 14
 
-Milestone 14 has progressed through three focused foundations:
+Milestone 14 has progressed through four focused foundations:
 
 1. **Resume skill-gap analysis** — implemented and tested.
 2. **Conservative resume improvement recommendations** — implemented and tested.
 3. **Safe application preparation + resume review alerts/decision logic** — implemented and tested; review-only, with no automatic submission or silent resume modification.
+4. **Explicit application authorization** — implemented and tested; prepared applications start pending and require an explicit approval decision before a future submission step can proceed.
 
-The next work should focus on completing the remaining safe application-flow pieces and their authorization, duplicate-prevention, missing-information, notification, and failure-path tests. Only after those gates pass should the auto-apply milestone be marked complete.
+The next work should focus on completing the remaining safe application-flow pieces and their duplicate-prevention, missing-information, notification-delivery, and failure-path tests. Only after those gates pass should the auto-apply milestone be marked complete.
 
 ## Current capabilities
 
 JobHunter AI currently provides career-page and ATS discovery, multi-source adapters, resume parsing, skill-gap analysis, conservative resume improvement guidance, weighted recommendation ranking, preference filtering, lifecycle detection, cross-source deduplication/provenance, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, production execution, source health/reliability monitoring, and smart Email/Telegram alerts.
 
-Automatic application submission is **not claimed as complete**. The current application-preparation and resume-review work is intentionally review-first and safety constrained.
+Automatic application submission is **not claimed as complete**. The current application-preparation, authorization, and resume-review work is intentionally review-first and safety constrained.
 
 See `docs/PRODUCTION.md` for configuration, operations, notifications, and release validation. See `CHANGELOG.md` for release notes.
 
