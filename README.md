@@ -116,6 +116,6 @@ The release gate requires green CI plus the production smoke checklist. Automati
 | 5 | Automated Production Runner | ✅ Complete |
 | 6 | V1 Hardening & Release | 🧪 Release validation |
 
-After all applicable production validation checks pass, the repository can be tagged `v1.0.0`.
+After both pass, the repository can be tagged `v1.0.0`.
 
 See `docs/PRODUCTION.md` for configuration and operations. See `docs/RELEASE_CHECKLIST.md` for the final release gate. See `CHANGELOG.md` for release notes.
