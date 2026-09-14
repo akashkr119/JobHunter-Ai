@@ -52,7 +52,11 @@ def decide_application_authorization(
 ) -> ApplicationAuthorization:
     """Record an explicit approve/reject decision for the same package."""
     try:
-        normalized = AuthorizationDecision(str(decision).strip().lower())
+        normalized = (
+            decision
+            if isinstance(decision, AuthorizationDecision)
+            else AuthorizationDecision(str(decision).strip().lower())
+        )
     except ValueError as exc:
         raise ValueError("Decision must be 'approved' or 'rejected'") from exc
     if normalized is AuthorizationDecision.PENDING:
