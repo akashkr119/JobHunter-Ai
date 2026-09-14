@@ -21,6 +21,10 @@ Recommendation Ranking
         ↓
 Resume Review / Application Preparation
         ↓
+Explicit User Authorization
+        ↓
+Future Supported Submission Step
+        ↓
 Dashboard + Email / Telegram Alerts
 ```
 
@@ -28,7 +32,7 @@ The system is source-adapter based and is designed to use legitimate/authorized 
 
 ## Current project status
 
-**V1 is in the hardening/release-validation phase, with the roadmap's major foundation milestones implemented.** The current work is focused on making the remaining application-preparation and resume-review workflow safe, deterministic, tested, and production-ready before any feature is marked complete.
+**V1 remains in the hardening/release-validation phase. Milestone 14 has completed its current safety foundations through the explicit application-submission authorization gate.** The remaining work is the supported submission-flow implementation and its duplicate-prevention, missing-information, notification-delivery, and failure-path validation. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -49,6 +53,8 @@ The system is source-adapter based and is designed to use legitimate/authorized 
 - Safe application-preparation package: structured job/resume/application information can be prepared for review without submitting an application.
 - Resume review alerts and a deterministic review decision helper. Explicitly confirmed skills can make modification required; missing skills are never treated as evidence or added automatically.
 - Explicit application authorization state: every prepared application starts pending and can become submittable only after an explicit user approval decision.
+- Application approval notification builder: review-ready authorization requests can produce a structured notification containing the job, resume, apply URL, approval ID, and explicit actions without approving or submitting the application.
+- Explicit submission-authorization gate: only an approved authorization with a non-empty approval ID can produce a submission permit, and the permit remains tied to the exact prepared application package.
 
 ## Safety boundary
 
@@ -58,7 +64,9 @@ The system must never fabricate qualifications, experience, answers, documents, 
 
 The resume-review workflow is currently **review-only**: it can identify and explain recommended/required modifications, but it does not silently modify the user's resume or submit applications.
 
-Application authorization is also explicit: a pending approval request cannot submit, a rejection cannot submit, and only an approved application package may proceed to a future supported submission step.
+Application authorization is explicit: a pending approval request cannot submit, a rejection cannot submit, and only an approved application package may proceed to a future supported submission step.
+
+The submission-authorization gate adds a final safety boundary before that future submission step: it requires an explicit `APPROVED` decision and a valid approval ID. The resulting `SubmissionPermit` references the exact prepared package. The gate itself does **not** contact or submit to any external website.
 
 ## Recommendation ranking
 
@@ -84,6 +92,26 @@ The review workflow distinguishes between:
 Application preparation creates a structured, reviewable package containing the job, resume path, cover letter, and optional application answers. It intentionally has **no automatic submission operation**.
 
 Application authorization creates a pending approval request for that package. The system records the request and explicit decision timestamps, and exposes `can_submit` only for an approved package. Notification delivery and the eventual supported submission action remain separate workflow steps.
+
+The current authorization chain is:
+
+```text
+Prepared ApplicationPackage
+        ↓
+Pending Authorization
+        ↓
+Review / Notification
+        ↓
+Explicit APPROVED Decision
+        ↓
+Valid Approval ID
+        ↓
+SubmissionPermit tied to exact package
+        ↓
+Future supported submission adapter
+```
+
+The current `SubmissionPermit` is an authorization artifact only. It does not perform the external submission itself.
 
 ## Multi-source job discovery
 
@@ -149,21 +177,31 @@ JOBHUNTER_TELEGRAM_CHAT_ID
 | 7 | Multi-Source Job Discovery | ✅ Implemented |
 | 8 | Resume Review & Modification Alerts | ✅ Implemented — review-only |
 | 9 | Safe Auto-Apply Workflow | 🚧 Not yet complete |
+| 14 | Resume Improvement & Safe Auto-Apply Foundations | 🟢 Safety foundation complete; submission flow pending |
 
 ### Current position: Milestone 14
 
-Milestone 14 has progressed through four focused foundations:
+Milestone 14 has completed the following focused foundations:
 
 1. **Resume skill-gap analysis** — implemented and tested.
 2. **Conservative resume improvement recommendations** — implemented and tested.
-3. **Safe application preparation + resume review alerts/decision logic** — implemented and tested; review-only, with no automatic submission or silent resume modification.
-4. **Explicit application authorization** — implemented and tested; prepared applications start pending and require an explicit approval decision before a future submission step can proceed.
+3. **Safe application preparation** — implemented and tested; structured packages are reviewable and do not submit.
+4. **Resume review alerts and deterministic decision logic** — implemented and tested; review-only and evidence-based.
+5. **Application approval notifications** — implemented and tested; notifications do not approve or submit applications.
+6. **Explicit application authorization** — implemented and tested; prepared applications start pending and require an explicit approval decision.
+7. **Submission-authorization gate** — implemented and tested; pending/rejected requests are blocked, a blank approval ID is rejected, and an approved request produces a permit tied to the exact prepared package.
 
-The next work should focus on completing the remaining safe application-flow pieces and their duplicate-prevention, missing-information, notification-delivery, and failure-path tests. Only after those gates pass should the auto-apply milestone be marked complete.
+The latest Milestone 14 submission-gate commit on `main` is:
+
+```text
+cbeab047eda9f8d9413b5763667b8124f2dacd5f
+```
+
+The gate deliberately stops before external submission. The next implementation stage is to build the **supported submission adapter/workflow around the permit**, with strict duplicate prevention, package integrity checks, missing-information handling, notification delivery, safe failure/retry behavior, and end-to-end tests. Only after those gates pass should automatic application submission be marked complete.
 
 ## Current capabilities
 
-JobHunter AI currently provides career-page and ATS discovery, multi-source adapters, resume parsing, skill-gap analysis, conservative resume improvement guidance, weighted recommendation ranking, preference filtering, lifecycle detection, cross-source deduplication/provenance, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, production execution, source health/reliability monitoring, and smart Email/Telegram alerts.
+JobHunter AI currently provides career-page and ATS discovery, multi-source adapters, resume parsing, skill-gap analysis, conservative resume improvement guidance, weighted recommendation ranking, preference filtering, lifecycle detection, cross-source deduplication/provenance, application tracking, saved jobs and notes, follow-up reminders, dashboard analytics, production execution, source health/reliability monitoring, smart Email/Telegram alerts, review-only application preparation, explicit approval authorization, and a final submission-authorization gate.
 
 Automatic application submission is **not claimed as complete**. The current application-preparation, authorization, and resume-review work is intentionally review-first and safety constrained.
 
@@ -199,4 +237,4 @@ pytest
 
 The release gate requires green CI plus the production smoke checklist. After both pass, the repository can be tagged `v1.0.0`.
 
-Application-preparation, resume-review, and future auto-apply functionality must have dedicated tests covering authorization, duplicate prevention, missing information, notification delivery, and safe failure behavior before being marked complete.
+Application-preparation, resume-review, authorization, and future auto-apply functionality must have dedicated tests covering authorization, exact-package binding, duplicate prevention, missing information, notification delivery, and safe failure behavior before being marked complete.
