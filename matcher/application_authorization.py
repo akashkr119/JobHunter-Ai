@@ -58,9 +58,9 @@ def decide_application_authorization(
             else AuthorizationDecision(str(decision).strip().lower())
         )
     except ValueError as exc:
-        raise ValueError("Decision must be 'approved' or 'rejected'") from exc
+        raise ValueError("Decision must be approved or rejected") from exc
     if normalized is AuthorizationDecision.PENDING:
-        raise ValueError("A decision must be approved or rejected")
+        raise ValueError("Decision must be approved or rejected")
     timestamp = decided_at or datetime.now(timezone.utc).isoformat()
     return ApplicationAuthorization(
         package=authorization.package,
