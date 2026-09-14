@@ -90,4 +90,17 @@ pytest
 
 The release gate requires green CI plus the production smoke checklist. Automatic application submission must not be marked complete until authorization, durable duplicate prevention, missing-information handling, notification delivery, supported-flow behavior, and safe failure paths have dedicated automated coverage.
 
+### V1 release milestones
+
+| # | Milestone | Status |
+| --- | --- | --- |
+| 1 | Job Discovery & Matching | ✅ Complete |
+| 2 | Recommendation & Tracking | ✅ Complete |
+| 3 | Notifications & Dashboard | ✅ Complete |
+| 4 | Production Readiness | ✅ Complete |
+| 5 | Automated Production Runner | ✅ Complete |
+| 6 | V1 Hardening & Release | 🧪 Release validation |
+
+After both pass, the repository can be tagged `v1.0.0`.
+
 See `docs/PRODUCTION.md` for configuration and operations. See `CHANGELOG.md` for release notes.
