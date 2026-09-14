@@ -1,5 +1,6 @@
 """Tests for the single-user browser setup workflow."""
 from io import BytesIO
+import importlib
 
 from dashboard.app import app
 
@@ -82,8 +83,10 @@ def test_discovery_requires_resume_and_url(tmp_path, monkeypatch):
 
 def test_discovery_runs_existing_pipeline(tmp_path, monkeypatch):
     monkeypatch.setenv("JOBHUNTER_DASHBOARD_CONFIG_PATH", str(tmp_path / "settings.json"))
+    dashboard_module = importlib.import_module("dashboard.app")
     monkeypatch.setattr(
-        "dashboard.app.run_once",
+        dashboard_module,
+        "run_once",
         lambda urls, settings: {"sources": len(urls), "jobs_found": 2, "jobs_saved": 2, "jobs_skipped": 0, "errors": []},
     )
     client = app.test_client()
