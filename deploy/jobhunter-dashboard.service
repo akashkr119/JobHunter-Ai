@@ -1,0 +1,16 @@
+[Unit]
+Description=JobHunter-Ai Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=%h/JobHunter-Ai
+EnvironmentFile=-%h/JobHunter-Ai/.env
+ExecStart=%h/JobHunter-Ai/.venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 1 --threads 4 --timeout 600 dashboard.app:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
