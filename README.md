@@ -4,7 +4,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 
 ## Current project status
 
-**V1 remains in the hardening/release-validation phase. Milestone 14.11 adds supported ATS submission adapter boundaries.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
+**V1 remains in the hardening/release-validation phase. Milestone 14.12 adds end-to-end submission validation.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -22,6 +22,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 - Missing-information gate: required application questions are tracked explicitly and block submission without inventing answers.
 - Failure/retry handling: retryable adapter failures are explicitly classified and can be retried; non-retryable failures are recorded but are not retried through the retry API.
 - Supported ATS adapter boundaries: Greenhouse, Lever, Workday, and SmartRecruiters adapters validate HTTPS ATS URLs and delegate only to a caller-provided authorized transport.
+- End-to-end submission workflow: approved packages pass authorization, completeness, durable idempotency, and supported-ATS adapter validation before the caller-provided transport is reached.
 
 ## Safety boundary
 
@@ -31,7 +32,7 @@ The system must never fabricate qualifications, experience, answers, documents, 
 
 The resume-review workflow is **review-only**: it identifies recommended/required modifications but does not silently modify the user's resume.
 
-Required application questions are modeled separately from supplied answers. Missing required answers are surfaced as `needs_user_input` before durable state is claimed or an external adapter is called.
+Required application questions are modeled separately from supplied answers. Missing required answers are surfaced before durable state is claimed or an external adapter is called.
 
 The submission executor reserves the exact package in durable state before calling an adapter. A previously submitted package can never be submitted again, even after restart. An unresolved in-progress attempt is blocked rather than retried automatically because its external outcome is unknown. Only an explicitly recorded failed attempt is eligible for the retry API, and only retryable adapter failures are intended to be retried.
 
@@ -51,12 +52,12 @@ ATS adapters validate the supported HTTPS host family and delegate to a caller-p
 | 14.8 | Safe submission executor foundation | ✅ Complete |
 | 14.9 | Persistent duplicate prevention / submission state | ✅ Complete |
 | 14.10 | Missing-information and failure/retry handling | ✅ Complete |
-| 14.11 | Supported ATS submission adapters | 🚧 In progress |
-| 14.12 | End-to-end submission validation | 🚧 Pending |
+| 14.11 | Supported ATS submission adapters | ✅ Complete |
+| 14.12 | End-to-end submission validation | 🚧 In progress |
 
-### Current position: Milestone 14.11
+### Current position: Milestone 14.12
 
-Milestone 14.11 is implementing **supported ATS submission adapter boundaries** for Greenhouse, Lever, Workday, and SmartRecruiters. The adapters validate the expected HTTPS ATS host and delegate the actual authorized flow to a caller-provided transport. They must not bypass login controls, CAPTCHAs, anti-bot controls, or platform restrictions.
+Milestone 14.12 validates the complete safe submission path across all four supported ATS adapter boundaries. Integration coverage verifies that explicit approval and complete information are required, unsupported or blocked flows never reach the transport, successful submissions are persisted, and duplicate submissions are rejected.
 
 ## Core workflow — no Excel required
 
@@ -88,6 +89,8 @@ Safe Submission Executor
 Persistent Submission State
         ↓
 Supported ATS Submission Adapter
+        ↓
+End-to-End Submission Validation
         ↓
 Application Tracking + Alerts
 ```
