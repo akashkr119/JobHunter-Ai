@@ -4,7 +4,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 
 ## Current project status
 
-**V1 remains in the hardening/release-validation phase. Milestone 14 has completed its current safety foundations through the explicit application-submission authorization gate.** The remaining work is the supported submission-flow implementation and its duplicate-prevention, missing-information, notification-delivery, and failure-path validation. Automatic application submission is **not yet complete**.
+**V1 remains in the hardening/release-validation phase. Milestone 14.9 now provides durable submission state and restart-safe duplicate prevention.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -17,6 +17,8 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 - Safe application-preparation package with review-only resume modification guidance.
 - Explicit application authorization: prepared applications start pending and require explicit user approval.
 - Explicit submission gate: only an approved authorization with a valid approval ID can produce a submission permit tied to the exact prepared package.
+- Safe submission executor foundation: stable package fingerprinting, adapter boundary, explicit result status, duplicate blocking, and retry-safe failure behavior.
+- Persistent submission state: SQLite-backed package lifecycle, atomic pre-submission reservation, durable submitted/failed outcomes, and conservative crash recovery that blocks unresolved attempts.
 
 ## Safety boundary
 
@@ -26,7 +28,9 @@ The system must never fabricate qualifications, experience, answers, documents, 
 
 The resume-review workflow is **review-only**: it identifies recommended/required modifications but does not silently modify the user's resume.
 
-The submission gate itself does **not** contact or submit to any external website.
+The submission executor reserves the exact package in durable state before calling an adapter. A previously submitted package can never be submitted again, even after restart. An unresolved in-progress attempt is blocked rather than retried automatically because its external outcome is unknown. Only an explicitly recorded failed attempt is retryable.
+
+The submission executor does not bypass login controls, CAPTCHAs, or platform restrictions. External submission is possible only through a future supported adapter supplied by the caller.
 
 ## Milestone 14 roadmap
 
@@ -39,17 +43,15 @@ The submission gate itself does **not** contact or submit to any external websit
 | 14.5 | Application approval notifications | ✅ Complete |
 | 14.6 | Explicit application authorization | ✅ Complete |
 | 14.7 | Submission-authorization gate | ✅ Complete |
-| 14.8 | Safe submission executor foundation | 🚧 Next |
-| 14.9 | Duplicate prevention / submission state persistence | 🚧 Pending |
-| 14.10 | Missing-information and failure/retry handling | 🚧 Pending |
+| 14.8 | Safe submission executor foundation | ✅ Complete |
+| 14.9 | Persistent duplicate prevention / submission state | ✅ Complete |
+| 14.10 | Missing-information and failure/retry handling | 🚧 Next |
 | 14.11 | Supported ATS submission adapters | 🚧 Pending |
 | 14.12 | End-to-end submission validation | 🚧 Pending |
 
-### Current position: Milestone 14.8
+### Current position: Milestone 14.10
 
-The next implementation step is the **safe submission executor foundation**. It will accept only a valid `SubmissionPermit`, identify the exact application package by a stable fingerprint, block duplicate execution, return explicit success/failure results, and keep the external interaction behind a supported adapter interface.
-
-No login bypass, CAPTCHA bypass, protected-page scraping, or automatic submission should be introduced without an explicit supported integration and dedicated safety tests.
+The next implementation step is **missing-information and failure/retry handling**. Failed submissions must remain safely retryable, while incomplete application data must pause before any external interaction.
 
 ## Core workflow — no Excel required
 
@@ -74,6 +76,10 @@ Explicit User Authorization
         ↓
 Submission Permit
         ↓
+Safe Submission Executor
+        ↓
+Persistent Submission State
+        ↓
 Supported Submission Adapter
         ↓
 Application Tracking + Alerts
@@ -87,6 +93,19 @@ Run the full automated suite with:
 pytest
 ```
 
-The release gate requires green CI plus the production smoke checklist. Automatic application submission must not be marked complete until authorization, duplicate prevention, missing-information handling, notification delivery, supported-flow behavior, and safe failure paths have dedicated automated coverage.
+The release gate requires green CI plus the production smoke checklist. Automatic application submission must not be marked complete until authorization, durable duplicate prevention, missing-information handling, notification delivery, supported-flow behavior, and safe failure paths have dedicated automated coverage.
+
+### V1 release milestones
+
+| # | Milestone | Status |
+| --- | --- | --- |
+| 1 | Job Discovery & Matching | ✅ Complete |
+| 2 | Recommendation & Tracking | ✅ Complete |
+| 3 | Notifications & Dashboard | ✅ Complete |
+| 4 | Production Readiness | ✅ Complete |
+| 5 | Automated Production Runner | ✅ Complete |
+| 6 | V1 Hardening & Release | 🧪 Release validation |
+
+After both pass, the repository can be tagged `v1.0.0`.
 
 See `docs/PRODUCTION.md` for configuration and operations. See `CHANGELOG.md` for release notes.
