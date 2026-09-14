@@ -4,7 +4,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 
 ## Current project status
 
-**V1 remains in the hardening/release-validation phase. Milestone 14.10 adds missing-information gating and explicit failure classification/retry handling.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
+**V1 remains in the hardening/release-validation phase. Milestone 14.11 adds supported ATS submission adapter boundaries.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -21,6 +21,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 - Persistent submission state: SQLite-backed package lifecycle, atomic pre-submission reservation, durable submitted/failed outcomes, and conservative crash recovery that blocks unresolved attempts.
 - Missing-information gate: required application questions are tracked explicitly and block submission without inventing answers.
 - Failure/retry handling: retryable adapter failures are explicitly classified and can be retried; non-retryable failures are recorded but are not retried through the retry API.
+- Supported ATS adapter boundaries: Greenhouse, Lever, Workday, and SmartRecruiters adapters validate HTTPS ATS URLs and delegate only to a caller-provided authorized transport.
 
 ## Safety boundary
 
@@ -34,7 +35,7 @@ Required application questions are modeled separately from supplied answers. Mis
 
 The submission executor reserves the exact package in durable state before calling an adapter. A previously submitted package can never be submitted again, even after restart. An unresolved in-progress attempt is blocked rather than retried automatically because its external outcome is unknown. Only an explicitly recorded failed attempt is eligible for the retry API, and only retryable adapter failures are intended to be retried.
 
-The submission executor does not bypass login controls, CAPTCHAs, or platform restrictions. External submission is possible only through a future supported adapter supplied by the caller.
+ATS adapters validate the supported HTTPS host family and delegate to a caller-provided authorized transport. They do not automate browsers, bypass login controls, bypass CAPTCHAs, evade anti-bot controls, or override platform restrictions.
 
 ## Milestone 14 roadmap
 
@@ -50,12 +51,12 @@ The submission executor does not bypass login controls, CAPTCHAs, or platform re
 | 14.8 | Safe submission executor foundation | ✅ Complete |
 | 14.9 | Persistent duplicate prevention / submission state | ✅ Complete |
 | 14.10 | Missing-information and failure/retry handling | ✅ Complete |
-| 14.11 | Supported ATS submission adapters | 🚧 Next |
+| 14.11 | Supported ATS submission adapters | 🚧 In progress |
 | 14.12 | End-to-end submission validation | 🚧 Pending |
 
 ### Current position: Milestone 14.11
 
-The next implementation step is **supported ATS submission adapters**. Adapters must operate only through supported application flows and must not bypass login controls, CAPTCHAs, or platform restrictions.
+Milestone 14.11 is implementing **supported ATS submission adapter boundaries** for Greenhouse, Lever, Workday, and SmartRecruiters. The adapters validate the expected HTTPS ATS host and delegate the actual authorized flow to a caller-provided transport. They must not bypass login controls, CAPTCHAs, anti-bot controls, or platform restrictions.
 
 ## Core workflow — no Excel required
 
@@ -86,7 +87,7 @@ Safe Submission Executor
         ↓
 Persistent Submission State
         ↓
-Supported Submission Adapter
+Supported ATS Submission Adapter
         ↓
 Application Tracking + Alerts
 ```
