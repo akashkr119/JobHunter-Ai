@@ -4,7 +4,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 
 ## Current project status
 
-**V1 remains in the hardening/release-validation phase. Milestone 14.8 now has a safe submission-executor foundation.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, blocks duplicate execution within the executor lifecycle, and keeps external interaction behind a supported adapter interface. Automatic application submission is **not yet complete**.
+**V1 remains in the hardening/release-validation phase. Milestone 14.9 now provides durable submission state and restart-safe duplicate prevention.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -18,6 +18,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 - Explicit application authorization: prepared applications start pending and require explicit user approval.
 - Explicit submission gate: only an approved authorization with a valid approval ID can produce a submission permit tied to the exact prepared package.
 - Safe submission executor foundation: stable package fingerprinting, adapter boundary, explicit result status, duplicate blocking, and retry-safe failure behavior.
+- Persistent submission state: SQLite-backed package lifecycle, atomic pre-submission reservation, durable submitted/failed outcomes, and conservative crash recovery that blocks unresolved attempts.
 
 ## Safety boundary
 
@@ -26,6 +27,8 @@ JobHunter **does not automatically submit applications merely because a job has 
 The system must never fabricate qualifications, experience, answers, documents, or skills. If required information is missing or cannot be safely determined, the workflow must pause for user input.
 
 The resume-review workflow is **review-only**: it identifies recommended/required modifications but does not silently modify the user's resume.
+
+The submission executor reserves the exact package in durable state before calling an adapter. A previously submitted package can never be submitted again, even after restart. An unresolved in-progress attempt is blocked rather than retried automatically because its external outcome is unknown. Only an explicitly recorded failed attempt is retryable.
 
 The submission executor does not bypass login controls, CAPTCHAs, or platform restrictions. External submission is possible only through a future supported adapter supplied by the caller.
 
@@ -41,14 +44,14 @@ The submission executor does not bypass login controls, CAPTCHAs, or platform re
 | 14.6 | Explicit application authorization | ✅ Complete |
 | 14.7 | Submission-authorization gate | ✅ Complete |
 | 14.8 | Safe submission executor foundation | ✅ Complete |
-| 14.9 | Persistent duplicate prevention / submission state | 🚧 Next |
-| 14.10 | Missing-information and failure/retry handling | 🚧 Pending |
+| 14.9 | Persistent duplicate prevention / submission state | ✅ Complete |
+| 14.10 | Missing-information and failure/retry handling | 🚧 Next |
 | 14.11 | Supported ATS submission adapters | 🚧 Pending |
 | 14.12 | End-to-end submission validation | 🚧 Pending |
 
-### Current position: Milestone 14.9
+### Current position: Milestone 14.10
 
-The next implementation step is **persistent duplicate prevention and submission state**. The in-memory executor guard must be backed by durable application state so a restart cannot accidentally submit the same prepared package twice.
+The next implementation step is **missing-information and failure/retry handling**. Failed submissions must remain safely retryable, while incomplete application data must pause before any external interaction.
 
 ## Core workflow — no Excel required
 
@@ -74,6 +77,8 @@ Explicit User Authorization
 Submission Permit
         ↓
 Safe Submission Executor
+        ↓
+Persistent Submission State
         ↓
 Supported Submission Adapter
         ↓
