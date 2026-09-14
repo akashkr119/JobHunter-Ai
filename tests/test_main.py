@@ -1,11 +1,12 @@
 """Tests for the JobHunter application entry point."""
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
 from config.settings import Settings
-from main import build_scheduler, load_career_urls, load_resume_skills, run_once, run_scheduled
+from main import build_scheduler, load_career_urls, load_resume_skills, main, parse_args, run_once, run_scheduled
 
 
 def make_settings(tmp_path, **overrides):
@@ -98,6 +99,28 @@ def test_load_career_urls_removes_duplicates(tmp_path):
     workbook = tmp_path / "companies.xlsx"
     pd.DataFrame([{"Company": "Example", "Career URL": "https://jobs.lever.co/example"}, {"Company": "Example", "Career URL": "https://jobs.lever.co/example"}]).to_excel(workbook, index=False)
     assert load_career_urls(str(workbook)) == ["https://jobs.lever.co/example"]
+
+
+def test_parse_args_supports_production_flags():
+    with patch.object(sys, "argv", ["main.py", "--env-file", ".env", "--scheduled", "https://example.com/careers"]):
+        args = parse_args()
+    assert args.env_file == ".env"
+    assert args.scheduled is True
+    assert args.career_urls == ["https://example.com/careers"]
+
+
+@patch("main.run_scheduled")
+@patch("main.validate_startup")
+@patch("main.Settings.from_env")
+def test_main_uses_env_file_and_scheduled_runner(mock_from_env, mock_validate, mock_run_scheduled, tmp_path):
+    settings = make_settings(tmp_path)
+    mock_from_env.return_value = settings
+    args = MagicMock(career_urls=["https://example.com/careers"], companies=None, no_discovery=False, env_file="/tmp/jobhunter.env", scheduled=True)
+    with patch("main.parse_args", return_value=args):
+        assert main() == 0
+    mock_from_env.assert_called_once_with("/tmp/jobhunter.env")
+    mock_validate.assert_called_once_with(args.career_urls, settings)
+    mock_run_scheduled.assert_called_once_with(args.career_urls, settings)
 
 
 @patch("main.load_resume_skills", return_value=["python", "selenium"])
