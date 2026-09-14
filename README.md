@@ -4,7 +4,7 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 
 ## Current project status
 
-**V1 remains in the hardening/release-validation phase. Milestone 14.12 adds end-to-end submission validation.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
+**Milestone 14.12 is complete. V1 remains in the final production release-validation phase.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -53,9 +53,9 @@ ATS adapters validate the supported HTTPS host family and delegate to a caller-p
 | 14.9 | Persistent duplicate prevention / submission state | ✅ Complete |
 | 14.10 | Missing-information and failure/retry handling | ✅ Complete |
 | 14.11 | Supported ATS submission adapters | ✅ Complete |
-| 14.12 | End-to-end submission validation | 🚧 In progress |
+| 14.12 | End-to-end submission validation | ✅ Complete |
 
-### Current position: Milestone 14.12
+### Current position: V1 release validation
 
 Milestone 14.12 validates the complete safe submission path across all four supported ATS adapter boundaries. Integration coverage verifies that explicit approval and complete information are required, unsupported or blocked flows never reach the transport, successful submissions are persisted, and duplicate submissions are rejected.
 
@@ -116,6 +116,6 @@ The release gate requires green CI plus the production smoke checklist. Automati
 | 5 | Automated Production Runner | ✅ Complete |
 | 6 | V1 Hardening & Release | 🧪 Release validation |
 
-After both pass, the repository can be tagged `v1.0.0`.
+After all applicable production validation checks pass, the repository can be tagged `v1.0.0`.
 
-See `docs/PRODUCTION.md` for configuration and operations. See `CHANGELOG.md` for release notes.
+See `docs/PRODUCTION.md` for configuration and operations. See `docs/RELEASE_CHECKLIST.md` for the final release gate. See `CHANGELOG.md` for release notes.
