@@ -212,15 +212,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("career_urls", nargs="*", help="Company career/ATS URLs to scan")
     parser.add_argument("--companies", help="Excel file containing Company Name, optionally Website/Career URL")
     parser.add_argument("--no-discovery", action="store_true", help="Skip homepage deep discovery when Website is supplied; company-name-only Excel still performs required career search")
+    parser.add_argument("--env-file", help="Path to the production environment file")
+    parser.add_argument("--scheduled", action="store_true", help="Run as the production scheduled runner")
     return parser.parse_args()
 
 
 def main() -> int:
-    args = parse_args(); settings = Settings.from_env()
+    args = parse_args(); settings = Settings.from_env(args.env_file)
     try:
         career_urls = list(args.career_urls)
         if args.companies: career_urls.extend(load_career_urls(args.companies, discover=not args.no_discovery))
         validate_startup(career_urls, settings)
+        if args.scheduled:
+            run_scheduled(career_urls, settings)
+            return 0
         summary = run_once(career_urls, settings)
         print(f"JobHunter run complete: found={summary['jobs_found']} saved={summary['jobs_saved']} skipped={summary['jobs_skipped']} notifications={summary['notifications_sent']} errors={len(summary['errors'])}")
         return 0 if not summary["errors"] else 1
