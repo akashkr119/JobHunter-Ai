@@ -24,6 +24,85 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 - Supported ATS adapter boundaries: Greenhouse, Lever, Workday, and SmartRecruiters adapters validate HTTPS ATS URLs and delegate only to a caller-provided authorized transport.
 - End-to-end submission workflow: approved packages pass authorization, completeness, durable idempotency, and supported-ATS adapter validation before the caller-provided transport is reached.
 
+## Multi-user scalability plan
+
+JobHunter AI is planned as a **multi-user, multi-tenant application** rather than a single-user VM application. The production architecture must support the initial target of **30+ users** and provide a clean path to substantially more users without mixing personal data.
+
+### Target architecture
+
+```text
+Users / Browsers
+       ↓
+Authentication + Session Layer
+       ↓
+Web Application / API
+       ├──────────────→ PostgreSQL (shared application database)
+       │                    └── every user-owned record is scoped by user_id
+       │
+       ├──────────────→ Persistent File/Object Storage
+       │                    └── per-user resume files and versions
+       │
+       └──────────────→ Background Workers / Scheduler
+                            └── per-user jobs, preferences, and notifications
+```
+
+### User isolation requirements
+
+Each account must have isolated:
+
+- Login identity and securely hashed password credentials.
+- Profile and job-search preferences.
+- Active resume and historical resume versions.
+- Resume analysis and skill-gap results.
+- Discovered jobs and user-specific match/recommendation results.
+- Saved jobs, notes, follow-ups, and application records.
+- Application packages, approvals, submission state, and audit history.
+- Email/Telegram notification configuration and notification history.
+- Scheduled scan configuration and run history.
+
+User-owned records must be scoped by authenticated `user_id` and access-controlled at the application/service layer. One user must never be able to read, modify, or receive another user's private data or notifications.
+
+### Resume storage and lifecycle
+
+A browser upload becomes the user's active resume without requiring manual SSH/file copying on the VM. Resume files must be stored in persistent application storage with versioning and metadata. The active approved resume is used by future matching and scheduled scans. Previous versions remain available for controlled history/audit purposes.
+
+The resume-review system may recommend changes, but it must not silently rewrite or replace a user's resume. Any proposed update requires user review/validation before becoming active.
+
+### Database and credentials strategy
+
+The current SQLite-backed state is suitable for the existing single-instance foundation, but the multi-user production target should move shared application data to **PostgreSQL** (or an equivalent production-grade relational database) with migrations, indexes, transactions, backups, and connection pooling.
+
+User passwords must never be stored in plaintext; only strong password hashes should be persisted. External-service credentials and secrets must be encrypted/protected and must not be committed to the repository. Application secrets should be supplied through a secure deployment configuration or secret-management mechanism rather than a shared source-controlled file.
+
+### Scheduler and background processing
+
+Scheduled work must execute per user, using that user's active resume, preferences, sources, and notification settings. Background processing should be designed so that one user's scan failure does not stop other users' scans.
+
+The worker/scheduler layer should support queued jobs, retries with safe limits, run history, locking/idempotency, and controlled concurrency. The architecture should allow horizontal scaling to additional worker processes/VMs when user volume grows.
+
+### Notification isolation
+
+Notifications must always resolve to the authenticated user's configured destinations. A resume-review or job alert generated for User A must never be delivered to User B. Email and Telegram credentials/chat identifiers must be associated with the owning user and protected as secrets.
+
+### Scalability milestones
+
+The multi-user foundation will be implemented as a dedicated hardening track before treating the VM deployment as a final multi-user production release:
+
+| Area | Target |
+| --- | --- |
+| Authentication | Secure registration/login/session management |
+| Authorization | User-level access control and data isolation |
+| Database | PostgreSQL schema, migrations, indexes, transactions |
+| Storage | Persistent per-user resume storage and versioning |
+| Jobs | User-scoped discovery, matching, tracking, and deduplication |
+| Applications | User-scoped authorization, packages, submission state, and audit trail |
+| Notifications | User-scoped email/Telegram configuration and delivery |
+| Scheduler | Per-user scheduled scans with safe concurrency and retries |
+| Operations | Backups, logging, health checks, monitoring, and recovery |
+| Capacity | Validate 30+ users, then scale workers/database/storage independently |
+
+**Until this foundation is implemented and validated, the existing single-user SQLite/VM configuration should not be represented as the final architecture for a 30+ user service.**
+
 ## Safety boundary
 
 JobHunter **does not automatically submit applications merely because a job has a high match score**. Application submission remains a separate, explicitly authorized workflow and must use supported application flows.
