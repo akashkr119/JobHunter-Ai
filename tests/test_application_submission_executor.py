@@ -1,11 +1,14 @@
-"""Tests for the safe submission executor foundation and durable state."""
+"""Tests for safe submission, missing information, and durable retry state."""
 
 import pytest
 
 from matcher.application_authorization import decide_application_authorization, request_application_authorization
 from matcher.application_package import prepare_application_package
 from matcher.application_submission import (
+    NonRetryableSubmissionError,
+    RetryableSubmissionError,
     SubmissionExecutor,
+    SubmissionFailureCategory,
     SubmissionStatus,
     authorize_application_submission,
     package_fingerprint,
@@ -61,8 +64,7 @@ def test_executor_submits_approved_package_once(tmp_path):
 
 def test_executor_blocks_duplicate_package_before_adapter(tmp_path):
     adapter = FakeAdapter()
-    store = SubmissionStateStore(tmp_path / "state.db")
-    executor = SubmissionExecutor(adapter, store)
+    executor = SubmissionExecutor(adapter, SubmissionStateStore(tmp_path / "state.db"))
     permit = permit_for(package())
     executor.submit(permit)
     with pytest.raises(RuntimeError, match="already been submitted"):
@@ -98,48 +100,87 @@ def test_different_packages_are_not_duplicates(tmp_path):
     executor.close()
 
 
-def test_failed_submission_is_retryable(tmp_path):
-    class FailingAdapter:
+def test_retryable_failure_can_be_explicitly_retried(tmp_path):
+    class FlakyAdapter:
         def __init__(self):
             self.calls = 0
 
         def submit(self, application):
             self.calls += 1
-            raise RuntimeError("temporary failure")
+            if self.calls == 1:
+                raise RetryableSubmissionError("temporary network failure")
+            return "accepted on retry"
 
-    adapter = FailingAdapter()
+    adapter = FlakyAdapter()
     executor = SubmissionExecutor(adapter, SubmissionStateStore(tmp_path / "state.db"))
-    first = executor.submit(permit_for(package()))
-    second = executor.submit(permit_for(package()))
-    assert first.status is SubmissionStatus.FAILED
-    assert second.status is SubmissionStatus.FAILED
+    permit = permit_for(package())
+    first = executor.submit(permit)
+    retry = executor.retry(permit)
+    assert first.failure_category is SubmissionFailureCategory.RETRYABLE
+    assert retry.status is SubmissionStatus.SUBMITTED
     assert adapter.calls == 2
     executor.close()
 
 
-def test_failed_submission_is_retryable_after_restart(tmp_path):
-    class FailingAdapter:
-        def __init__(self):
-            self.calls = 0
-
-        def submit(self, application):
-            self.calls += 1
-            raise RuntimeError("temporary failure")
-
+def test_retryable_failure_can_be_retried_after_restart(tmp_path):
     state_path = tmp_path / "state.db"
-    first_adapter = FailingAdapter()
-    first = SubmissionExecutor(first_adapter, SubmissionStateStore(state_path))
+
+    class FailingAdapter:
+        def submit(self, application):
+            raise RetryableSubmissionError("temporary failure")
+
+    first = SubmissionExecutor(FailingAdapter(), SubmissionStateStore(state_path))
     permit = permit_for(package())
     result = first.submit(permit)
     first.close()
 
     second_adapter = FakeAdapter("accepted on retry")
     second = SubmissionExecutor(second_adapter, SubmissionStateStore(state_path))
-    retry = second.submit(permit)
-    assert result.status is SubmissionStatus.FAILED
+    retry = second.retry(permit)
+    assert result.failure_category is SubmissionFailureCategory.RETRYABLE
     assert retry.status is SubmissionStatus.SUBMITTED
     assert second_adapter.calls == 1
     second.close()
+
+
+def test_non_retryable_failure_is_not_retried(tmp_path):
+    class InvalidAdapter:
+        def __init__(self):
+            self.calls = 0
+
+        def submit(self, application):
+            self.calls += 1
+            raise NonRetryableSubmissionError("invalid application data")
+
+    adapter = InvalidAdapter()
+    executor = SubmissionExecutor(adapter, SubmissionStateStore(tmp_path / "state.db"))
+    permit = permit_for(package())
+    result = executor.submit(permit)
+    assert result.failure_category is SubmissionFailureCategory.NON_RETRYABLE
+    with pytest.raises(RuntimeError, match="Only a failed submission can be explicitly retried"):
+        executor.retry(permit)
+    assert adapter.calls == 1
+    executor.close()
+
+
+def test_missing_required_information_blocks_adapter(tmp_path):
+    adapter = FakeAdapter()
+    application = package(required_questions=("Work authorization", "Years of experience"))
+    permit = permit_for(package(answers={"Work authorization": "Yes", "Years of experience": ""}))
+    # A permit cannot be created for an incomplete package.
+    with pytest.raises(ValueError, match="Years of experience"):
+        permit_for(application)
+    # A manually constructed permit is still blocked before adapter execution.
+    from matcher.application_submission import SubmissionPermit
+    incomplete = SubmissionPermit(application, "approval-1")
+    executor = SubmissionExecutor(adapter, SubmissionStateStore(tmp_path / "state.db"))
+    result = executor.submit(incomplete)
+    assert result.status is SubmissionStatus.NEEDS_USER_INPUT
+    assert "Work authorization" in result.message
+    assert "Years of experience" in result.message
+    assert adapter.calls == 0
+    assert executor._state_store.get(result.package_fingerprint) is None
+    executor.close()
 
 
 def test_unresolved_in_progress_state_blocks_after_restart(tmp_path):

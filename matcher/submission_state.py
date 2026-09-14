@@ -22,6 +22,7 @@ class PersistedSubmission:
     approval_id: str
     state: str
     message: str
+    failure_category: str | None
     updated_at: str
 
 
@@ -30,7 +31,7 @@ class SubmissionStateStore:
 
     An in-progress record is deliberately treated as an unknown external outcome.
     It blocks a second attempt after a process crash rather than risking a duplicate
-    submission. Failed attempts are explicitly retryable.
+    submission. Failed attempts are explicitly retryable only when recorded as such.
     """
 
     def __init__(self, db_path: str | Path = "jobs.db") -> None:
@@ -44,14 +45,20 @@ class SubmissionStateStore:
                 approval_id TEXT NOT NULL,
                 state TEXT NOT NULL,
                 message TEXT NOT NULL DEFAULT '',
+                failure_category TEXT,
                 updated_at TEXT NOT NULL
             )"""
         )
+        columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(submission_state)")
+        }
+        if "failure_category" not in columns:
+            self.conn.execute("ALTER TABLE submission_state ADD COLUMN failure_category TEXT")
         self.conn.commit()
 
     def get(self, package_fingerprint: str) -> PersistedSubmission | None:
         row = self.conn.execute(
-            "SELECT package_fingerprint, approval_id, state, message, updated_at "
+            "SELECT package_fingerprint, approval_id, state, message, failure_category, updated_at "
             "FROM submission_state WHERE package_fingerprint=?",
             (package_fingerprint,),
         ).fetchone()
@@ -66,14 +73,14 @@ class SubmissionStateStore:
         cursor.execute("BEGIN IMMEDIATE")
         try:
             row = cursor.execute(
-                "SELECT package_fingerprint, approval_id, state, message, updated_at "
+                "SELECT package_fingerprint, approval_id, state, message, failure_category, updated_at "
                 "FROM submission_state WHERE package_fingerprint=?",
                 (package_fingerprint,),
             ).fetchone()
             if row is None:
                 cursor.execute(
-                    "INSERT INTO submission_state(package_fingerprint, approval_id, state, message, updated_at) "
-                    "VALUES(?, ?, ?, '', ?)",
+                    "INSERT INTO submission_state(package_fingerprint, approval_id, state, message, failure_category, updated_at) "
+                    "VALUES(?, ?, ?, '', NULL, ?)",
                     (package_fingerprint, approval_id, SubmissionState.IN_PROGRESS, now),
                 )
                 result = self.get(package_fingerprint)
@@ -91,7 +98,7 @@ class SubmissionStateStore:
                     "reconcile the external outcome before retrying"
                 )
             cursor.execute(
-                "UPDATE submission_state SET approval_id=?, state=?, message='', updated_at=? "
+                "UPDATE submission_state SET approval_id=?, state=?, message='', failure_category=NULL, updated_at=? "
                 "WHERE package_fingerprint=?",
                 (approval_id, SubmissionState.IN_PROGRESS, now, package_fingerprint),
             )
@@ -105,22 +112,33 @@ class SubmissionStateStore:
             raise
 
     def mark_submitted(self, package_fingerprint: str, message: str = "") -> PersistedSubmission:
-        self._set(package_fingerprint, SubmissionState.SUBMITTED, message)
+        self._set(package_fingerprint, SubmissionState.SUBMITTED, message, None)
         result = self.get(package_fingerprint)
         assert result is not None
         return result
 
-    def mark_failed(self, package_fingerprint: str, message: str) -> PersistedSubmission:
-        self._set(package_fingerprint, SubmissionState.FAILED, message)
+    def mark_failed(
+        self,
+        package_fingerprint: str,
+        message: str,
+        failure_category: str,
+    ) -> PersistedSubmission:
+        self._set(package_fingerprint, SubmissionState.FAILED, message, failure_category)
         result = self.get(package_fingerprint)
         assert result is not None
         return result
 
-    def _set(self, package_fingerprint: str, state: str, message: str) -> None:
+    def _set(
+        self,
+        package_fingerprint: str,
+        state: str,
+        message: str,
+        failure_category: str | None,
+    ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         cursor = self.conn.execute(
-            "UPDATE submission_state SET state=?, message=?, updated_at=? WHERE package_fingerprint=?",
-            (state, str(message), now, package_fingerprint),
+            "UPDATE submission_state SET state=?, message=?, failure_category=?, updated_at=? WHERE package_fingerprint=?",
+            (state, str(message), failure_category, now, package_fingerprint),
         )
         if cursor.rowcount != 1:
             raise KeyError(f"Unknown submission package: {package_fingerprint}")
