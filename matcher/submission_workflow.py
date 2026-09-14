@@ -25,13 +25,18 @@ def submit_authorized_application(
     durable submission state or call the external adapter. The caller remains
     responsible for supplying a supported, authorized transport through the
     adapter; this function performs no browser or authentication automation.
+
+    A caller-supplied state store remains open so its lifecycle can be inspected
+    or reused. When no store is supplied, the executor owns and closes its store.
     """
     permit = authorize_application_submission(
         authorization,
         approval_id=approval_id,
     )
+    owns_store = state_store is None
     executor = SubmissionExecutor(adapter, state_store)
     try:
         return executor.submit(permit)
     finally:
-        executor.close()
+        if owns_store:
+            executor.close()
