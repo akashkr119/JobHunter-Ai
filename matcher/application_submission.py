@@ -164,7 +164,7 @@ class SubmissionExecutor:
         if state.approval_id != permit.approval_id:
             raise PermissionError("Submission approval does not match the recorded attempt")
         if state.failure_category != SubmissionFailureCategory.RETRYABLE.value:
-            raise RuntimeError("Only retryable submission failures can be retried")
+            raise RuntimeError("Only a failed submission can be explicitly retried when the failure is retryable")
         return self.submit(permit)
 
     def close(self) -> None:
