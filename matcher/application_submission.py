@@ -121,7 +121,9 @@ class SubmissionExecutor:
         try:
             message = self._adapter.submit(permit.package)
         except RetryableSubmissionError as exc:
-            self._state_store.mark_failed(fingerprint, str(exc))
+            self._state_store.mark_failed(
+                fingerprint, str(exc), SubmissionFailureCategory.RETRYABLE.value
+            )
             return SubmissionResult(
                 SubmissionStatus.FAILED,
                 fingerprint,
@@ -129,7 +131,9 @@ class SubmissionExecutor:
                 SubmissionFailureCategory.RETRYABLE,
             )
         except NonRetryableSubmissionError as exc:
-            self._state_store.mark_failed(fingerprint, str(exc))
+            self._state_store.mark_failed(
+                fingerprint, str(exc), SubmissionFailureCategory.NON_RETRYABLE.value
+            )
             return SubmissionResult(
                 SubmissionStatus.FAILED,
                 fingerprint,
@@ -137,7 +141,9 @@ class SubmissionExecutor:
                 SubmissionFailureCategory.NON_RETRYABLE,
             )
         except Exception as exc:
-            self._state_store.mark_failed(fingerprint, str(exc))
+            self._state_store.mark_failed(
+                fingerprint, str(exc), SubmissionFailureCategory.NON_RETRYABLE.value
+            )
             return SubmissionResult(
                 SubmissionStatus.FAILED,
                 fingerprint,
@@ -150,13 +156,15 @@ class SubmissionExecutor:
         return SubmissionResult(SubmissionStatus.SUBMITTED, fingerprint, str(message))
 
     def retry(self, permit: SubmissionPermit) -> SubmissionResult:
-        """Retry only a persistently failed package; never retry unknown outcomes."""
+        """Retry only a persisted retryable failure with the same approval."""
         fingerprint = permit.package_fingerprint
         state = self._state_store.get(fingerprint)
         if state is None or state.state != "failed":
             raise RuntimeError("Only a failed submission can be explicitly retried")
         if state.approval_id != permit.approval_id:
             raise PermissionError("Submission approval does not match the recorded attempt")
+        if state.failure_category != SubmissionFailureCategory.RETRYABLE.value:
+            raise RuntimeError("Only retryable submission failures can be retried")
         return self.submit(permit)
 
     def close(self) -> None:
