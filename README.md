@@ -1,10 +1,171 @@
 # JobHunter AI
 
-JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and alerting system. It discovers relevant opportunities across supported job sources, compares jobs with the resume, recommends strong matches, tracks applications, and sends smart alerts.
+JobHunter AI is a **resume-first job discovery, matching, ranking, tracking, and alerting system**. The user's resume is the primary input. JobHunter AI analyzes the resume, discovers relevant jobs from configured/authorized job sources, compares jobs with the user's real skills and preferences, scores and ranks the opportunities, asks the user to validate application decisions, and provides resume-improvement guidance when recurring job requirements reveal gaps.
+
+## Product concept — resume first
+
+The user should **not have to provide career/ATS URLs as part of normal setup**. JobHunter AI should discover jobs from supported/authorized sources using the user's resume, detected roles, selected locations, work-mode preferences, and optional search preferences.
+
+### User flow
+
+```text
+Upload Resume
+     ↓
+Parse Resume
+     ↓
+Build Candidate Profile
+     ├── Skills
+     ├── Experience
+     ├── Projects
+     ├── Technologies
+     ├── Experience level
+     └── Suggested target roles
+     ↓
+User reviews/edits target roles
+     ↓
+User selects one or more locations
+     ↓
+User selects work mode(s)
+     ↓
+Discover Jobs Now
+     ↓
+Resume ↔ Job Matching
+     ↓
+ATS / eligibility / recommendation scoring
+     ↓
+Ranked Job Results
+     ↓
+User validates each recommended application
+     ↓
+Apply only after explicit approval
+```
+
+### Setup requirements
+
+- **Resume:** upload PDF, DOCX, TXT, or Markdown. The uploaded resume becomes the active resume for that user.
+- **Target roles:** derive suggested roles from the resume; do not hard-code a default role list. The user can add, remove, or edit the detected roles.
+- **Locations:** use a multi-select location control rather than a free-text location field. A user can select multiple cities/regions and `Remote` where supported.
+- **Work mode:** provide selectable `On-site`, `Hybrid`, and `Remote` options; multiple selections are allowed.
+- **Career URLs:** remove from the normal setup experience. Career/ATS URLs remain an internal/source capability where needed, not a user requirement for the product's core workflow.
+- **Matching preferences:** optional minimum score, desired keywords, and excluded keywords may remain user-configurable.
+
+## Automatic job discovery — every 24 hours
+
+The automatic discovery feature runs **once every 24 hours** for each active user. It uses that user's active resume, detected/approved target roles, selected locations, work modes, and notification preferences.
+
+```text
+Active User Profile
+       ↓
+24-hour Scheduler
+       ↓
+Search supported/authorized job sources
+       ↓
+Normalize + deduplicate
+       ↓
+Resume/skill matching
+       ↓
+Preference filtering
+       ↓
+ATS/eligibility + recommendation scoring
+       ↓
+Compare with previously seen jobs
+       ↓
+Notify only about relevant/new actionable results
+```
+
+A failed scan for one user must not stop scans for other users. Scheduled scans need run history, locking/idempotency, bounded retries, and user-scoped notification delivery.
+
+## Job validation and application workflow
+
+A high score is a **recommendation**, not permission to apply automatically.
+
+For a recommended job, the dashboard/notification should provide:
+
+- Job title, company, location, work mode, and application link.
+- Resume match score and recommendation/ATS score.
+- Matched skills and missing/weak requirements.
+- Explanation of why the job was recommended.
+- A clear user decision such as **Review**, **Apply**, or **Don't Apply**.
+
+Automatic application submission may proceed only after the user explicitly approves that specific application and the required information is complete. The system must never fabricate qualifications, experience, answers, or skills.
+
+## Resume improvement intelligence
+
+JobHunter AI should learn from the jobs it discovers without inventing experience for the user.
+
+When relevant jobs repeatedly require skills or experience that are missing or weakly represented in the current resume, the system should create a **Resume Update Recommended** notification containing:
+
+- Frequently requested skills/requirements.
+- How often they appeared in relevant jobs.
+- Which resume sections appear weak or missing.
+- Concrete suggestions for improving the resume **only when supported by the user's actual experience**.
+- A clear review step before any resume change becomes active.
+
+The system must not silently rewrite, replace, or add false experience to a resume.
+
+## Notifications
+
+Supported notification destinations may include email and Telegram. Notifications are user-scoped and must never cross accounts.
+
+Examples:
+
+- New strong job matches found.
+- A job requires user validation before application.
+- A previously seen job changed meaningfully.
+- Resume update recommendations are available.
+- Required application information is missing.
+
+## Multi-user architecture
+
+JobHunter AI is planned as a **multi-user, multi-tenant application**, not a single-user VM application. The initial target is **30+ users**, with a clean path to substantially more users.
+
+```text
+Users / Browsers
+       ↓
+Authentication + Session Layer
+       ↓
+Web Application / API
+       ├──────────────→ PostgreSQL / production relational DB
+       │                    └── user_id scoped records
+       │
+       ├──────────────→ Persistent file/object storage
+       │                    └── per-user resume files + versions
+       │
+       └──────────────→ Background workers / scheduler
+                            └── per-user 24h discovery + notifications
+```
+
+Each account must have isolated:
+
+- Login identity and securely hashed password credentials.
+- Profile and job-search preferences.
+- Active resume and historical resume versions.
+- Resume analysis, detected roles, and skill-gap results.
+- Discovered jobs and user-specific match/recommendation results.
+- Saved jobs, notes, follow-ups, and application records.
+- Application packages, approvals, submission state, and audit history.
+- Email/Telegram notification configuration and notification history.
+- Scheduled scan configuration and run history.
+
+User-owned records must be scoped by authenticated `user_id` and protected at the application/service layer. One user must never read, modify, or receive another user's private data or notifications.
+
+### Resume storage and lifecycle
+
+A browser upload becomes the user's active resume without manual SSH/file copying. Resume files must be stored in persistent application storage with versioning and metadata. The active approved resume is used by future matching and scheduled scans. Previous versions remain available for controlled history/audit purposes.
+
+### Database and credentials strategy
+
+SQLite may remain useful for local/single-user development, but the multi-user production target should use **PostgreSQL or an equivalent production-grade relational database** with migrations, indexes, transactions, backups, and connection pooling.
+
+User passwords must never be stored in plaintext. External-service credentials and secrets must be encrypted/protected and must not be committed to the repository. Application secrets should be supplied through secure deployment configuration or secret management.
+
+### Scheduler and background processing
+
+The production default for automatic job discovery is **24 hours** (`scheduler_hours = 24`). Scheduled work must execute using each user's own active resume and preferences. The worker/scheduler layer should support safe concurrency, retries, run history, locking/idempotency, and horizontal scaling.
 
 ## Current project status
 
-**Milestone 14.12 is complete. V1 remains in the final production release-validation phase.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
+**Milestone 14.12 is complete. V1 remains in release-validation/hardening.** The executor accepts only an explicitly approved, review-ready package, fingerprints the exact package, atomically reserves it before external interaction, and persists the outcome. Automatic application submission is **not yet complete**.
 
 ### Implemented
 
@@ -24,84 +185,43 @@ JobHunter AI is a resume-first job discovery, matching, ranking, tracking, and a
 - Supported ATS adapter boundaries: Greenhouse, Lever, Workday, and SmartRecruiters adapters validate HTTPS ATS URLs and delegate only to a caller-provided authorized transport.
 - End-to-end submission workflow: approved packages pass authorization, completeness, durable idempotency, and supported-ATS adapter validation before the caller-provided transport is reached.
 
-## Multi-user scalability plan
+## Core workflow — no career URL required
 
-JobHunter AI is planned as a **multi-user, multi-tenant application** rather than a single-user VM application. The production architecture must support the initial target of **30+ users** and provide a clean path to substantially more users without mixing personal data.
-
-### Target architecture
+Career/ATS URLs can still exist inside source adapters, but they are **not required from the user for the core workflow**.
 
 ```text
-Users / Browsers
-       ↓
-Authentication + Session Layer
-       ↓
-Web Application / API
-       ├──────────────→ PostgreSQL (shared application database)
-       │                    └── every user-owned record is scoped by user_id
-       │
-       ├──────────────→ Persistent File/Object Storage
-       │                    └── per-user resume files and versions
-       │
-       └──────────────→ Background Workers / Scheduler
-                            └── per-user jobs, preferences, and notifications
+Resume + User Preferences
+        ↓
+Detected / Approved Target Roles
+        ↓
+Selected Locations + Work Modes
+        ↓
+Multi-source Job Discovery
+        ↓
+Normalize + Deduplicate
+        ↓
+Resume / Skill Matching
+        ↓
+Preference Filtering
+        ↓
+ATS / Eligibility / Recommendation Ranking
+        ↓
+New/Relevant Job Notification
+        ↓
+User Validation
+        ↓
+Explicit Application Authorization
+        ↓
+Missing-Information Gate
+        ↓
+Safe Submission Executor
+        ↓
+Application Tracking + Alerts
+        ↓
+Resume Gap Analysis
+        ↓
+Resume Update Recommendation
 ```
-
-### User isolation requirements
-
-Each account must have isolated:
-
-- Login identity and securely hashed password credentials.
-- Profile and job-search preferences.
-- Active resume and historical resume versions.
-- Resume analysis and skill-gap results.
-- Discovered jobs and user-specific match/recommendation results.
-- Saved jobs, notes, follow-ups, and application records.
-- Application packages, approvals, submission state, and audit history.
-- Email/Telegram notification configuration and notification history.
-- Scheduled scan configuration and run history.
-
-User-owned records must be scoped by authenticated `user_id` and access-controlled at the application/service layer. One user must never be able to read, modify, or receive another user's private data or notifications.
-
-### Resume storage and lifecycle
-
-A browser upload becomes the user's active resume without requiring manual SSH/file copying on the VM. Resume files must be stored in persistent application storage with versioning and metadata. The active approved resume is used by future matching and scheduled scans. Previous versions remain available for controlled history/audit purposes.
-
-The resume-review system may recommend changes, but it must not silently rewrite or replace a user's resume. Any proposed update requires user review/validation before becoming active.
-
-### Database and credentials strategy
-
-The current SQLite-backed state is suitable for the existing single-instance foundation, but the multi-user production target should move shared application data to **PostgreSQL** (or an equivalent production-grade relational database) with migrations, indexes, transactions, backups, and connection pooling.
-
-User passwords must never be stored in plaintext; only strong password hashes should be persisted. External-service credentials and secrets must be encrypted/protected and must not be committed to the repository. Application secrets should be supplied through a secure deployment configuration or secret-management mechanism rather than a shared source-controlled file.
-
-### Scheduler and background processing
-
-Scheduled work must execute per user, using that user's active resume, preferences, sources, and notification settings. Background processing should be designed so that one user's scan failure does not stop other users' scans.
-
-The worker/scheduler layer should support queued jobs, retries with safe limits, run history, locking/idempotency, and controlled concurrency. The architecture should allow horizontal scaling to additional worker processes/VMs when user volume grows.
-
-### Notification isolation
-
-Notifications must always resolve to the authenticated user's configured destinations. A resume-review or job alert generated for User A must never be delivered to User B. Email and Telegram credentials/chat identifiers must be associated with the owning user and protected as secrets.
-
-### Scalability milestones
-
-The multi-user foundation will be implemented as a dedicated hardening track before treating the VM deployment as a final multi-user production release:
-
-| Area | Target |
-| --- | --- |
-| Authentication | Secure registration/login/session management |
-| Authorization | User-level access control and data isolation |
-| Database | PostgreSQL schema, migrations, indexes, transactions |
-| Storage | Persistent per-user resume storage and versioning |
-| Jobs | User-scoped discovery, matching, tracking, and deduplication |
-| Applications | User-scoped authorization, packages, submission state, and audit trail |
-| Notifications | User-scoped email/Telegram configuration and delivery |
-| Scheduler | Per-user scheduled scans with safe concurrency and retries |
-| Operations | Backups, logging, health checks, monitoring, and recovery |
-| Capacity | Validate 30+ users, then scale workers/database/storage independently |
-
-**Until this foundation is implemented and validated, the existing single-user SQLite/VM configuration should not be represented as the final architecture for a 30+ user service.**
 
 ## Safety boundary
 
@@ -117,62 +237,25 @@ The submission executor reserves the exact package in durable state before calli
 
 ATS adapters validate the supported HTTPS host family and delegate to a caller-provided authorized transport. They do not automate browsers, bypass login controls, bypass CAPTCHAs, evade anti-bot controls, or override platform restrictions.
 
-## Milestone 14 roadmap
+## Multi-user scalability milestones
 
-| Stage | Scope | Status |
-| --- | --- | --- |
-| 14.1 | Resume skill-gap analysis | ✅ Complete |
-| 14.2 | Conservative resume improvement recommendations | ✅ Complete |
-| 14.3 | Safe application preparation | ✅ Complete |
-| 14.4 | Resume review alerts and decision | ✅ Complete |
-| 14.5 | Application approval notifications | ✅ Complete |
-| 14.6 | Explicit application authorization | ✅ Complete |
-| 14.7 | Submission-authorization gate | ✅ Complete |
-| 14.8 | Safe submission executor foundation | ✅ Complete |
-| 14.9 | Persistent duplicate prevention / submission state | ✅ Complete |
-| 14.10 | Missing-information and failure/retry handling | ✅ Complete |
-| 14.11 | Supported ATS submission adapters | ✅ Complete |
-| 14.12 | End-to-end submission validation | ✅ Complete |
+| Area | Target |
+| --- | --- |
+| Authentication | Secure registration/login/session management |
+| Authorization | User-level access control and data isolation |
+| Database | PostgreSQL schema, migrations, indexes, transactions |
+| Storage | Persistent per-user resume storage and versioning |
+| Resume intelligence | Resume parsing, detected roles, skill gaps, review-only recommendations |
+| Job discovery | Source-agnostic discovery without requiring user-entered career URLs |
+| Preferences | Multi-select locations and work modes; user-editable detected roles |
+| Scheduler | Per-user automatic discovery every 24 hours |
+| Jobs | User-scoped discovery, matching, tracking, and deduplication |
+| Applications | User-scoped authorization, packages, submission state, and audit trail |
+| Notifications | User-scoped email/Telegram configuration and delivery |
+| Operations | Backups, logging, health checks, monitoring, and recovery |
+| Capacity | Validate 30+ users, then scale workers/database/storage independently |
 
-### Current position: V1 release validation
-
-Milestone 14.12 validates the complete safe submission path across all four supported ATS adapter boundaries. Integration coverage verifies that explicit approval and complete information are required, unsupported or blocked flows never reach the transport, successful submissions are persisted, and duplicate submissions are rejected.
-
-## Core workflow — no Excel required
-
-Excel is **not required for the core workflow**. It may remain an optional import/export utility.
-
-```text
-Resume + Preferences
-        ↓
-Multi-source Job Discovery
-        ↓
-Normalize + Deduplicate
-        ↓
-Resume / Skill Matching
-        ↓
-Preference Filtering
-        ↓
-Recommendation Ranking
-        ↓
-Resume Review / Application Preparation
-        ↓
-Explicit User Authorization
-        ↓
-Submission Permit
-        ↓
-Missing-Information Gate
-        ↓
-Safe Submission Executor
-        ↓
-Persistent Submission State
-        ↓
-Supported ATS Submission Adapter
-        ↓
-End-to-End Submission Validation
-        ↓
-Application Tracking + Alerts
-```
+**Until this foundation is implemented and validated, the existing single-user SQLite/VM configuration should not be represented as the final architecture for a 30+ user service.**
 
 ## Development and release gate
 
@@ -183,18 +266,5 @@ pytest
 ```
 
 The release gate requires green CI plus the production smoke checklist. Automatic application submission must not be marked complete until authorization, durable duplicate prevention, missing-information handling, notification delivery, supported-flow behavior, and safe failure paths have dedicated automated coverage.
-
-### V1 release milestones
-
-| # | Milestone | Status |
-| --- | --- | --- |
-| 1 | Job Discovery & Matching | ✅ Complete |
-| 2 | Recommendation & Tracking | ✅ Complete |
-| 3 | Notifications & Dashboard | ✅ Complete |
-| 4 | Production Readiness | ✅ Complete |
-| 5 | Automated Production Runner | ✅ Complete |
-| 6 | V1 Hardening & Release | 🧪 Release validation |
-
-After both pass, the repository can be tagged `v1.0.0`.
 
 See `docs/PRODUCTION.md` for configuration and operations. See `docs/RELEASE_CHECKLIST.md` for the final release gate. See `CHANGELOG.md` for release notes.
