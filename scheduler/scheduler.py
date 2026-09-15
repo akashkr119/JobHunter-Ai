@@ -22,6 +22,34 @@ class Scheduler:
     def _scrape_one(self,career_url:str)->tuple[str,list,Exception|None]:
         try:return career_url,self.scraper_factory.scrape(career_url),None
         except Exception as exc:return career_url,[],exc
+    def _match_and_save_jobs(self,jobs:Iterable, resume_skills:Iterable[str], min_score:float, preferences:JobPreferences, notification:dict|None, source_label:str="discovery") -> dict:
+        """Match and persist already-discovered normalized jobs from any source."""
+        summary={"sources":1,"jobs_found":0,"jobs_saved":0,"jobs_skipped":0,"jobs_preference_excluded":0,"jobs_expired":0,"notifications_sent":0,"notifications_suppressed":0,"errors":[]}
+        skills=tuple(resume_skills)
+        for job in jobs:
+            summary["jobs_found"]+=1
+            try:
+                preference=preferences.evaluate(job)
+                if preference["excluded_keywords"]:
+                    summary["jobs_preference_excluded"]+=1;summary["jobs_skipped"]+=1;self._diagnose_skip(job,"preference",preference.get("excluded_keywords"),None,min_score);continue
+                match=self.matcher.match_job(skills,job);match["preference_score"]=preference["preference_score"];match["preference_match"]=preference["preference_match"];match["preference_details"]=preference
+                if match["score"]<float(min_score):
+                    summary["jobs_skipped"]+=1;self._diagnose_skip(job,"score",None,match,min_score);continue
+                existing=self._existing_job(job);job_id=self.database.save_job(job,match=match);summary["jobs_saved"]+=1;stored=self.database.get_job(job_id)
+                if notification and self.notifier:
+                    try:
+                        should_notify=self._should_notify(stored,existing,notification)
+                        if should_notify:self._notify(job,match,notification,stored);self.database.mark_job_notified(job_id,stored["priority_label"]);summary["notifications_sent"]+=1
+                        else:summary["notifications_suppressed"]+=1
+                    except Exception as exc:summary["errors"].append({"source":source_label,"stage":"notify","apply_url":str(getattr(job,"apply_url","") or ""),"error":str(exc)})
+            except Exception as exc:
+                summary["errors"].append({"source":source_label,"stage":"match_or_save","apply_url":str(getattr(job,"apply_url","") or ""),"error":str(exc)})
+        return summary
+    def run_discovered_jobs(self,jobs:Iterable,resume_skills:Iterable[str],min_score:float=0.0,notification:dict|None=None,preferences:JobPreferences|dict|None=None)->dict:
+        """Process normalized jobs without requiring career/ATS URLs."""
+        if not 0<=float(min_score)<=100:raise ValueError("min_score must be between 0 and 100")
+        prefs=preferences if isinstance(preferences,JobPreferences) else JobPreferences.from_dict(preferences)
+        return self._match_and_save_jobs(jobs,resume_skills,float(min_score),prefs,notification)
     def run_pipeline(self,career_urls:Iterable[str],resume_skills:Iterable[str],min_score:float=0.0,company:str="",notification:dict|None=None,preferences:JobPreferences|dict|None=None)->dict:
         if not 0<=float(min_score)<=100:raise ValueError("min_score must be between 0 and 100")
         prefs=preferences if isinstance(preferences,JobPreferences) else JobPreferences.from_dict(preferences);skills=tuple(resume_skills);summary={"sources":0,"jobs_found":0,"jobs_saved":0,"jobs_skipped":0,"jobs_preference_excluded":0,"jobs_expired":0,"notifications_sent":0,"notifications_suppressed":0,"errors":[]}
