@@ -6,7 +6,6 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 from config.settings import Settings
 
@@ -81,18 +80,17 @@ def infer_target_roles(resume_path: str | Path) -> list[str]:
 
 
 def dashboard_settings() -> Settings:
-    """Build Settings from environment defaults plus persisted browser configuration."""
+    """Build dashboard settings from persisted browser configuration."""
     base = Settings.from_env()
     saved = load_config()
-    inferred = tuple(saved.get("target_titles") or ())
     values = {
         "resume_path": str(saved.get("resume_path") or base.resume_path),
         "min_match_score": float(saved.get("min_match_score", base.min_match_score)),
-        "target_titles": _csv_values(inferred or base.target_titles),
-        "preferred_locations": _csv_values(saved.get("preferred_locations", base.preferred_locations)),
-        "work_modes": _csv_values(saved.get("work_modes", base.work_modes)),
-        "desired_keywords": _csv_values(saved.get("desired_keywords", base.desired_keywords)),
-        "excluded_keywords": _csv_values(saved.get("excluded_keywords", base.excluded_keywords)),
+        "target_titles": _csv_values(saved.get("target_titles", ())),
+        "preferred_locations": _csv_values(saved.get("preferred_locations", ())),
+        "work_modes": _csv_values(saved.get("work_modes", ())),
+        "desired_keywords": _csv_values(saved.get("desired_keywords", ())),
+        "excluded_keywords": _csv_values(saved.get("excluded_keywords", ())),
     }
     from dataclasses import replace
     return replace(base, **values)
@@ -215,8 +213,7 @@ def store_resume(file_storage) -> dict:
         current = load_config()
         current["resume_path"] = str(target)
         current["resume_filename"] = original_name
-        if not current.get("target_titles") and inferred_roles:
-            current["target_titles"] = inferred_roles
+        current["target_titles"] = inferred_roles
         current.setdefault("automatic_search_enabled", True)
         save_config(current)
         return {"filename": original_name, "format": suffix.lstrip("."), "skills": parsed["skills"], "detected_target_roles": inferred_roles, "path": str(target)}
