@@ -1,13 +1,14 @@
-"""Persistent single-user dashboard configuration and resume storage helpers."""
+"""Persistent dashboard configuration and resume storage helpers."""
 from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 from config.settings import Settings
+from matcher.job_preferences import JobPreferences
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024
 SUPPORTED_RESUME_FORMATS = {".pdf", ".docx", ".txt", ".md"}
@@ -55,44 +56,73 @@ def _csv_values(value) -> tuple[str, ...]:
     return ()
 
 
+def _clean_role(value: str) -> str:
+    value = re.sub(r"\s+", " ", str(value or "")).strip(" -|•\t")
+    value = re.sub(r"^(role|title|designation|position)\s*[:\-]\s*", "", value, flags=re.I)
+    return value.strip()
+
+
+def infer_target_roles(resume_path: str | Path) -> list[str]:
+    """Extract plausible job-title lines from the resume; never invent a role."""
+    from matcher.resume_parser import ResumeParser
+
+    parsed = ResumeParser().parse(str(resume_path))
+    text = str(parsed.get("text") or "")
+    candidates: list[str] = []
+    role_pattern = re.compile(r"\b(engineer|developer|tester|test|qa|sdet|analyst|architect|scientist|designer|administrator|consultant|specialist|manager|lead|devops|validation|verification)\b", re.I)
+    for raw in text.splitlines():
+        line = _clean_role(raw)
+        if not line or len(line) > 100 or len(line.split()) > 12:
+            continue
+        if role_pattern.search(line) and not re.search(r"\b(skills?|responsibilit|requirements?|experience|education|project|summary|objective)\b", line, re.I):
+            if line.casefold() not in {x.casefold() for x in candidates}:
+                candidates.append(line)
+    return candidates[:10]
+
+
 def dashboard_settings() -> Settings:
-    """Build Settings from environment defaults plus persisted browser configuration."""
+    """Build dashboard settings from persisted browser configuration."""
     base = Settings.from_env()
     saved = load_config()
     values = {
         "resume_path": str(saved.get("resume_path") or base.resume_path),
         "min_match_score": float(saved.get("min_match_score", base.min_match_score)),
-        "target_titles": _csv_values(saved.get("target_titles", base.target_titles)),
-        "preferred_locations": _csv_values(saved.get("preferred_locations", base.preferred_locations)),
-        "work_modes": _csv_values(saved.get("work_modes", base.work_modes)),
-        "desired_keywords": _csv_values(saved.get("desired_keywords", base.desired_keywords)),
-        "excluded_keywords": _csv_values(saved.get("excluded_keywords", base.excluded_keywords)),
+        "target_titles": _csv_values(saved.get("target_titles", ())),
+        "preferred_locations": _csv_values(saved.get("preferred_locations", ())),
+        "work_modes": _csv_values(saved.get("work_modes", ())),
+        "desired_keywords": _csv_values(saved.get("desired_keywords", ())),
+        "excluded_keywords": _csv_values(saved.get("excluded_keywords", ())),
     }
     from dataclasses import replace
-
-    return replace(base, **values)
+    settings = replace(base, **values)
+    settings.job_preferences()
+    return settings
 
 
 def dashboard_state() -> dict:
     settings = dashboard_settings()
     saved = load_config()
     resume = Path(settings.resume_path).expanduser()
+    roles = list(saved.get("target_titles") or ())
+    locations = list(saved.get("preferred_locations") or ())
     return {
         "resume": {
             "configured": resume.is_file(),
-            "filename": resume.name if resume.is_file() else None,
+            "filename": saved.get("resume_filename") or (resume.name if resume.is_file() else None),
             "format": resume.suffix.lower().lstrip(".") if resume.is_file() else None,
             "path_configured": str(resume),
         },
         "preferences": {
             "min_match_score": settings.min_match_score,
-            "target_titles": list(settings.target_titles),
-            "preferred_locations": list(settings.preferred_locations),
-            "work_modes": list(settings.work_modes),
-            "desired_keywords": list(settings.desired_keywords),
-            "excluded_keywords": list(settings.excluded_keywords),
+            "target_titles": roles,
+            "detected_target_roles": roles,
+            "preferred_locations": locations,
+            "work_modes": list(saved.get("work_modes") or ()),
+            "desired_keywords": list(saved.get("desired_keywords") or ()),
+            "excluded_keywords": list(saved.get("excluded_keywords") or ()),
+            "automatic_search_enabled": bool(saved.get("automatic_search_enabled", True)),
+            "automatic_search_hours": 24,
         },
-        "career_urls": list(saved.get("career_urls") or []),
     }
 
 
@@ -100,13 +130,7 @@ def update_preferences(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("JSON object is required")
     current = load_config()
-    fields = (
-        "target_titles",
-        "preferred_locations",
-        "work_modes",
-        "desired_keywords",
-        "excluded_keywords",
-    )
+    fields = ("target_titles", "preferred_locations", "work_modes", "desired_keywords", "excluded_keywords")
     for field in fields:
         if field in payload:
             values = _csv_values(payload[field])
@@ -121,17 +145,17 @@ def update_preferences(payload: dict) -> dict:
         if not 0 <= score <= 100:
             raise ValueError("min_match_score must be between 0 and 100")
         current["min_match_score"] = score
-    if "career_urls" in payload:
-        urls = _csv_values(payload["career_urls"])
-        if not 1 <= len(urls) <= 20:
-            raise ValueError("career_urls must contain between 1 and 20 URLs")
-        for url in urls:
-            parsed = urlparse(url)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError(f"Invalid career URL: {url}")
-            if parsed.username or parsed.password:
-                raise ValueError("Career URLs must not contain credentials")
-        current["career_urls"] = list(urls)
+    if "automatic_search_enabled" in payload:
+        if not isinstance(payload["automatic_search_enabled"], bool):
+            raise ValueError("automatic_search_enabled must be a boolean")
+        current["automatic_search_enabled"] = payload["automatic_search_enabled"]
+    JobPreferences(
+        target_titles=tuple(current.get("target_titles") or ()),
+        preferred_locations=tuple(current.get("preferred_locations") or ()),
+        work_modes=tuple(current.get("work_modes") or ()),
+        desired_keywords=tuple(current.get("desired_keywords") or ()),
+        excluded_keywords=tuple(current.get("excluded_keywords") or ()),
+    )
     save_config(current)
     return dashboard_state()
 
@@ -143,7 +167,6 @@ def _resume_suffix(file_storage, original_name: str, initial_bytes: bytes) -> st
         return suffix
     if suffix:
         raise ValueError("Unsupported resume format. Use PDF, DOCX, TXT or MD")
-
     mimetype = str(getattr(file_storage, "mimetype", "") or "").lower().split(";", 1)[0].strip()
     mime_formats = {
         "application/pdf": ".pdf",
@@ -161,7 +184,7 @@ def _resume_suffix(file_storage, original_name: str, initial_bytes: bytes) -> st
 
 
 def store_resume(file_storage) -> dict:
-    """Validate, parse, and atomically activate a browser-uploaded resume."""
+    """Validate, parse, infer roles, and atomically activate a browser-uploaded resume."""
     if file_storage is None or not getattr(file_storage, "filename", ""):
         raise ValueError("A resume file is required")
     original_name = Path(str(file_storage.filename)).name
@@ -172,9 +195,7 @@ def store_resume(file_storage) -> dict:
     if hasattr(stream, "seek"):
         stream.seek(0)
         prefix_to_write = b""
-
     from matcher.resume_parser import ResumeParser
-
     resume_dir = config_path().parent / "resumes"
     resume_dir.mkdir(parents=True, exist_ok=True)
     target = resume_dir / f"active{suffix}"
@@ -198,12 +219,15 @@ def store_resume(file_storage) -> dict:
         parsed = ResumeParser().parse(temporary)
         if not parsed["text"]:
             raise ValueError("Resume contains no extractable text")
+        inferred_roles = infer_target_roles(temporary)
         os.replace(temporary, target)
         current = load_config()
         current["resume_path"] = str(target)
         current["resume_filename"] = original_name
+        current["target_titles"] = inferred_roles
+        current.setdefault("automatic_search_enabled", True)
         save_config(current)
-        return {"filename": original_name, "format": suffix.lstrip("."), "skills": parsed["skills"], "path": str(target)}
+        return {"filename": original_name, "format": suffix.lstrip("."), "skills": parsed["skills"], "detected_target_roles": inferred_roles, "path": str(target)}
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
