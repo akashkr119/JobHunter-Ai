@@ -14,7 +14,6 @@ from crawler.job_scraper import Job
 from database.db import Database
 from matcher.skill_matcher import SkillMatcher
 from matcher.resume_parser import ResumeParser
-from matcher.job_preferences import JobPreferences
 from notifier.notifier import Notifier
 from scheduler.scheduler import Scheduler
 
@@ -32,12 +31,7 @@ def _queries(settings: Settings) -> Iterable[tuple[str, str]]:
 
 
 def discover_jobs(settings: Settings) -> list[Job]:
-    """Discover jobs without requiring a user-supplied career URL.
-
-    Adzuna is the first source wired into the resume-first dashboard because it
-    accepts free-form role/location queries and returns normalized job records.
-    Additional authorized sources can be added behind the same function later.
-    """
+    """Discover jobs without requiring a user-supplied career URL."""
     source = AdzunaSource()
     jobs: list[Job] = []
     seen: set[str] = set()
