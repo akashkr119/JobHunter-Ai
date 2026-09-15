@@ -6,7 +6,7 @@ from database.db import Database
 from matcher.recommendation_ranker import RecommendationRanker
 from crawler.source_health import evaluate_source_health
 from dashboard.resume_first_discovery import run_discovery
-from dashboard.user_config import dashboard_settings, dashboard_state, store_resume, update_preferences
+from dashboard.user_config import dashboard_settings, dashboard_state, store_resume, update_preferences, load_config
 from dashboard.auto_discovery import start as start_auto_discovery
 
 app = Flask(__name__)
@@ -131,8 +131,7 @@ def discovery():
 
 @app.get("/api/automatic-search")
 def automatic_search():
-    state = dashboard_state()
-    saved = __import__("dashboard.user_config", fromlist=["load_config"]).load_config()
+    saved = load_config()
     return jsonify({"enabled": bool(saved.get("automatic_search_enabled", True)), "interval_hours": 24, "last_run": saved.get("automatic_search_last_run")})
 
 
@@ -259,8 +258,6 @@ def update_job_tracking(job_id):
     return jsonify(_job_summary(_rank(job)))
 
 
-# The production VM uses one Gunicorn worker. Start the 24-hour dashboard
-# scheduler once when that worker imports this module.
 start_auto_discovery()
 
 if __name__ == "__main__":
