@@ -167,8 +167,6 @@ def store_resume(file_storage) -> dict:
     original_name = Path(str(file_storage.filename)).name
     stream = getattr(file_storage, "stream", file_storage)
     initial_bytes = stream.read(4096)
-    if hasattr(stream, "seek"):
-        stream.seek(0)
     suffix = _resume_suffix(file_storage, original_name, initial_bytes)
 
     from matcher.resume_parser import ResumeParser
