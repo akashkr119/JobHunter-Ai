@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from config.settings import Settings
+from matcher.job_preferences import JobPreferences
 
 MAX_RESUME_BYTES = 10 * 1024 * 1024
 SUPPORTED_RESUME_FORMATS = {".pdf", ".docx", ".txt", ".md"}
@@ -94,7 +95,7 @@ def dashboard_settings() -> Settings:
     }
     from dataclasses import replace
     settings = replace(base, **values)
-    settings.job_preferences()  # validate persisted dashboard values as well as env values
+    settings.job_preferences()
     return settings
 
 
@@ -148,13 +149,15 @@ def update_preferences(payload: dict) -> dict:
         if not isinstance(payload["automatic_search_enabled"], bool):
             raise ValueError("automatic_search_enabled must be a boolean")
         current["automatic_search_enabled"] = payload["automatic_search_enabled"]
+    JobPreferences(
+        target_titles=tuple(current.get("target_titles") or ()),
+        preferred_locations=tuple(current.get("preferred_locations") or ()),
+        work_modes=tuple(current.get("work_modes") or ()),
+        desired_keywords=tuple(current.get("desired_keywords") or ()),
+        excluded_keywords=tuple(current.get("excluded_keywords") or ()),
+    )
     save_config(current)
-    try:
-        return dashboard_state()
-    except Exception:
-        # Do not leave invalid persisted preferences behind.
-        previous = {k: v for k, v in current.items()}
-        raise
+    return dashboard_state()
 
 
 def _resume_suffix(file_storage, original_name: str, initial_bytes: bytes) -> str:
