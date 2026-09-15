@@ -13,6 +13,12 @@ MAX_RESUME_BYTES = 10 * 1024 * 1024
 SUPPORTED_RESUME_FORMATS = {".pdf", ".docx", ".txt", ".md"}
 CONFIG_ENV = "JOBHUNTER_DASHBOARD_CONFIG_PATH"
 DEFAULT_CONFIG_PATH = Path("data/dashboard_settings.json")
+AVAILABLE_LOCATIONS = (
+    "Mumbai", "Pune", "Bengaluru", "Hyderabad", "Chennai", "Delhi NCR", "Noida", "Gurugram",
+    "Ahmedabad", "Kolkata", "Jaipur", "Indore", "Nagpur", "Chandigarh", "Kochi", "Coimbatore",
+    "Thiruvananthapuram", "Mysuru", "Mangaluru", "Vadodara", "Surat", "Nashik", "Bhubaneswar",
+    "Visakhapatnam", "Lucknow", "Patna", "Bhopal", "Ranchi", "Remote (India)",
+)
 
 
 def config_path() -> Path:
@@ -80,9 +86,10 @@ def dashboard_state() -> dict:
     return {
         "resume": {
             "configured": resume.is_file(),
-            "filename": resume.name if resume.is_file() else None,
+            "filename": saved.get("resume_filename") or (resume.name if resume.is_file() else None),
             "format": resume.suffix.lower().lstrip(".") if resume.is_file() else None,
             "path_configured": str(resume),
+            "roles": list(saved.get("resume_roles") or []),
         },
         "preferences": {
             "min_match_score": settings.min_match_score,
@@ -93,6 +100,7 @@ def dashboard_state() -> dict:
             "excluded_keywords": list(settings.excluded_keywords),
         },
         "career_urls": list(saved.get("career_urls") or []),
+        "available_locations": list(AVAILABLE_LOCATIONS),
     }
 
 
@@ -100,19 +108,27 @@ def update_preferences(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("JSON object is required")
     current = load_config()
-    fields = (
-        "target_titles",
-        "preferred_locations",
-        "work_modes",
-        "desired_keywords",
-        "excluded_keywords",
-    )
-    for field in fields:
+    resume_roles = tuple(current.get("resume_roles") or ())
+    if "target_titles" in payload:
+        values = _csv_values(payload["target_titles"])
+        if len(values) > 30:
+            raise ValueError("target_titles may contain at most 30 values")
+        unknown_roles = [value for value in values if value not in resume_roles]
+        if unknown_roles:
+            raise ValueError("Target roles must be selected from roles detected in the active resume")
+        current["target_titles"] = list(values)
+
+    for field in ("preferred_locations", "work_modes", "desired_keywords", "excluded_keywords"):
         if field in payload:
             values = _csv_values(payload[field])
             if len(values) > 30:
                 raise ValueError(f"{field} may contain at most 30 values")
+            if field == "preferred_locations":
+                invalid = [value for value in values if value not in AVAILABLE_LOCATIONS]
+                if invalid:
+                    raise ValueError("Select locations from the available location list")
             current[field] = list(values)
+
     if "min_match_score" in payload:
         try:
             score = float(payload["min_match_score"])
@@ -200,10 +216,19 @@ def store_resume(file_storage) -> dict:
             raise ValueError("Resume contains no extractable text")
         os.replace(temporary, target)
         current = load_config()
+        roles = list(parsed.get("roles") or [])
         current["resume_path"] = str(target)
         current["resume_filename"] = original_name
+        current["resume_roles"] = roles
+        current["target_titles"] = roles
         save_config(current)
-        return {"filename": original_name, "format": suffix.lstrip("."), "skills": parsed["skills"], "path": str(target)}
+        return {
+            "filename": original_name,
+            "format": suffix.lstrip("."),
+            "skills": parsed["skills"],
+            "roles": roles,
+            "path": str(target),
+        }
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
