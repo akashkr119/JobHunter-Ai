@@ -60,6 +60,26 @@ def test_resume_upload_parses_and_activates(tmp_path, monkeypatch):
     assert app.test_client().get("/api/setup").get_json()["resume"]["configured"] is True
 
 
+def test_resume_upload_accepts_extensionless_pdf_from_mobile(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBHUNTER_DASHBOARD_CONFIG_PATH", str(tmp_path / "settings.json"))
+    pdf_bytes = b"%PDF-1.7\nmobile resume bytes\n%%EOF"
+    monkeypatch.setattr(
+        "matcher.resume_parser.ResumeParser.parse",
+        lambda self, path: {"text": "Python Selenium", "skills": ["python", "selenium"]},
+    )
+    response = app.test_client().post(
+        "/api/resume",
+        data={"resume": (BytesIO(pdf_bytes), "Akash_Kumar_updated", "application/pdf")},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 201
+    payload = response.get_json()["resume"]
+    assert payload["filename"] == "Akash_Kumar_updated"
+    assert payload["format"] == "pdf"
+    active = tmp_path / "resumes" / "active.pdf"
+    assert active.read_bytes() == pdf_bytes
+
+
 def test_resume_upload_rejects_unsupported_format(tmp_path, monkeypatch):
     monkeypatch.setenv("JOBHUNTER_DASHBOARD_CONFIG_PATH", str(tmp_path / "settings.json"))
     response = app.test_client().post(
@@ -93,7 +113,9 @@ def test_discovery_runs_existing_pipeline(tmp_path, monkeypatch):
     client.patch("/api/preferences", json={"career_urls": ["https://example.com/careers"]})
     client.post(
         "/api/resume",
-        data={"resume": (BytesIO(b"Python Selenium pytest"), "resume.txt")},
+        data={
+            "resume": (BytesIO(b"Python Selenium pytest"), "resume.txt")
+        },
         content_type="multipart/form-data",
     )
     response = client.post("/api/discovery", json={})
