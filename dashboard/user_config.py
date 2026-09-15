@@ -168,6 +168,10 @@ def store_resume(file_storage) -> dict:
     stream = getattr(file_storage, "stream", file_storage)
     initial_bytes = stream.read(4096)
     suffix = _resume_suffix(file_storage, original_name, initial_bytes)
+    prefix_to_write = initial_bytes
+    if hasattr(stream, "seek"):
+        stream.seek(0)
+        prefix_to_write = b""
 
     from matcher.resume_parser import ResumeParser
 
@@ -178,9 +182,9 @@ def store_resume(file_storage) -> dict:
     try:
         total = 0
         with os.fdopen(fd, "wb") as handle:
-            if initial_bytes:
-                handle.write(initial_bytes)
-                total = len(initial_bytes)
+            if prefix_to_write:
+                handle.write(prefix_to_write)
+                total = len(prefix_to_write)
             while True:
                 chunk = stream.read(1024 * 1024)
                 if not chunk:
