@@ -93,14 +93,17 @@ def dashboard_settings() -> Settings:
         "excluded_keywords": _csv_values(saved.get("excluded_keywords", ())),
     }
     from dataclasses import replace
-    return replace(base, **values)
+    settings = replace(base, **values)
+    settings.job_preferences()  # validate persisted dashboard values as well as env values
+    return settings
 
 
 def dashboard_state() -> dict:
     settings = dashboard_settings()
     saved = load_config()
     resume = Path(settings.resume_path).expanduser()
-    roles = list(settings.target_titles)
+    roles = list(saved.get("target_titles") or ())
+    locations = list(saved.get("preferred_locations") or ())
     return {
         "resume": {
             "configured": resume.is_file(),
@@ -112,10 +115,10 @@ def dashboard_state() -> dict:
             "min_match_score": settings.min_match_score,
             "target_titles": roles,
             "detected_target_roles": roles,
-            "preferred_locations": list(settings.preferred_locations),
-            "work_modes": list(settings.work_modes),
-            "desired_keywords": list(settings.desired_keywords),
-            "excluded_keywords": list(settings.excluded_keywords),
+            "preferred_locations": locations,
+            "work_modes": list(saved.get("work_modes") or ()),
+            "desired_keywords": list(saved.get("desired_keywords") or ()),
+            "excluded_keywords": list(saved.get("excluded_keywords") or ()),
             "automatic_search_enabled": bool(saved.get("automatic_search_enabled", True)),
             "automatic_search_hours": 24,
         },
@@ -146,7 +149,12 @@ def update_preferences(payload: dict) -> dict:
             raise ValueError("automatic_search_enabled must be a boolean")
         current["automatic_search_enabled"] = payload["automatic_search_enabled"]
     save_config(current)
-    return dashboard_state()
+    try:
+        return dashboard_state()
+    except Exception:
+        # Do not leave invalid persisted preferences behind.
+        previous = {k: v for k, v in current.items()}
+        raise
 
 
 def _resume_suffix(file_storage, original_name: str, initial_bytes: bytes) -> str:
