@@ -11,19 +11,26 @@ def test_setup_endpoint_without_resume(tmp_path, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["resume"]["configured"] is False
+    assert payload["resume"]["roles"] == []
     assert payload["preferences"]["min_match_score"] == 60.0
     assert payload["career_urls"] == []
+    assert "Mumbai" in payload["available_locations"]
 
 
 def test_preferences_are_persisted(tmp_path, monkeypatch):
     monkeypatch.setenv("JOBHUNTER_DASHBOARD_CONFIG_PATH", str(tmp_path / "settings.json"))
     client = app.test_client()
+    client.post(
+        "/api/resume",
+        data={"resume": (BytesIO(b"QA Automation Engineer\nSystem Validation Engineer\nPython Selenium"), "resume.txt")},
+        content_type="multipart/form-data",
+    )
     response = client.patch(
         "/api/preferences",
         json={
             "career_urls": ["https://example.com/careers"],
             "target_titles": ["QA Automation Engineer"],
-            "preferred_locations": ["Mumbai"],
+            "preferred_locations": ["Mumbai", "Pune"],
             "work_modes": ["hybrid"],
             "desired_keywords": ["python", "selenium"],
             "excluded_keywords": ["intern"],
@@ -34,6 +41,7 @@ def test_preferences_are_persisted(tmp_path, monkeypatch):
     payload = response.get_json()
     assert payload["career_urls"] == ["https://example.com/careers"]
     assert payload["preferences"]["target_titles"] == ["QA Automation Engineer"]
+    assert payload["preferences"]["preferred_locations"] == ["Mumbai", "Pune"]
     assert payload["preferences"]["min_match_score"] == 70.0
     reloaded = client.get("/api/setup").get_json()
     assert reloaded["preferences"]["desired_keywords"] == ["python", "selenium"]
@@ -45,11 +53,30 @@ def test_preferences_reject_invalid_url(tmp_path, monkeypatch):
     assert response.status_code == 400
 
 
+def test_preferences_reject_manual_target_role_not_in_resume(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBHUNTER_DASHBOARD_CONFIG_PATH", str(tmp_path / "settings.json"))
+    client = app.test_client()
+    client.post(
+        "/api/resume",
+        data={"resume": (BytesIO(b"QA Automation Engineer\nPython Selenium"), "resume.txt")},
+        content_type="multipart/form-data",
+    )
+    response = client.patch("/api/preferences", json={"target_titles": ["Unrelated Role"]})
+    assert response.status_code == 400
+    assert "detected in the active resume" in response.get_json()["error"]
+
+
+def test_preferences_reject_invalid_location(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBHUNTER_DASHBOARD_CONFIG_PATH", str(tmp_path / "settings.json"))
+    response = app.test_client().patch("/api/preferences", json={"preferred_locations": ["Made Up City"]})
+    assert response.status_code == 400
+
+
 def test_resume_upload_parses_and_activates(tmp_path, monkeypatch):
     monkeypatch.setenv("JOBHUNTER_DASHBOARD_CONFIG_PATH", str(tmp_path / "settings.json"))
     response = app.test_client().post(
         "/api/resume",
-        data={"resume": (BytesIO(b"Python Selenium pytest automotive testing"), "my-resume.txt")},
+        data={"resume": (BytesIO(b"QA Automation Engineer\nPython Selenium pytest automotive testing"), "my-resume.txt")},
         content_type="multipart/form-data",
     )
     assert response.status_code == 201
@@ -57,6 +84,7 @@ def test_resume_upload_parses_and_activates(tmp_path, monkeypatch):
     assert payload["filename"] == "my-resume.txt"
     assert "python" in payload["skills"]
     assert "selenium" in payload["skills"]
+    assert "QA Automation Engineer" in payload["roles"]
     assert app.test_client().get("/api/setup").get_json()["resume"]["configured"] is True
 
 
@@ -65,7 +93,7 @@ def test_resume_upload_accepts_extensionless_pdf_from_mobile(tmp_path, monkeypat
     pdf_bytes = b"%PDF-1.7\nmobile resume bytes\n%%EOF"
     monkeypatch.setattr(
         "matcher.resume_parser.ResumeParser.parse",
-        lambda self, path: {"text": "Python Selenium", "skills": ["python", "selenium"]},
+        lambda self, path: {"text": "Python Selenium", "skills": ["python", "selenium"], "roles": []},
     )
     response = app.test_client().post(
         "/api/resume",
@@ -113,9 +141,7 @@ def test_discovery_runs_existing_pipeline(tmp_path, monkeypatch):
     client.patch("/api/preferences", json={"career_urls": ["https://example.com/careers"]})
     client.post(
         "/api/resume",
-        data={
-            "resume": (BytesIO(b"Python Selenium pytest"), "resume.txt")
-        },
+        data={"resume": (BytesIO(b"Python Selenium pytest"), "resume.txt")},
         content_type="multipart/form-data",
     )
     response = client.post("/api/discovery", json={})

@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 class ResumeParser:
-    """Extract resume text and identify common technical skills."""
+    """Extract resume text, skills, and role signals from resumes."""
 
     DEFAULT_SKILLS = (
         "python", "java", "javascript", "typescript", "c++", "c#", "sql",
@@ -17,6 +17,17 @@ class ResumeParser:
     )
 
     SUPPORTED_FORMATS = {".txt", ".md", ".pdf", ".docx"}
+    ROLE_TOKENS = re.compile(
+        r"\b(engineer|developer|tester|testing|sdet|qa|analyst|architect|specialist|"
+        r"consultant|manager|lead|administrator|designer|scientist|validation|"
+        r"verification|devops|automation)\b",
+        re.IGNORECASE,
+    )
+    ROLE_SENTENCE_STARTS = re.compile(
+        r"^(experienced|responsible|worked|working|developed|created|managed|led|"
+        r"handled|designed|performed|proficient|skilled|currently|having|with|seeking)\b",
+        re.IGNORECASE,
+    )
 
     def extract_text(self, resume_path: str | Path) -> str:
         """Extract text from TXT, Markdown, PDF or DOCX resumes."""
@@ -92,8 +103,27 @@ class ResumeParser:
 
         return found
 
+    def extract_roles(self, text: str) -> list[str]:
+        """Extract concise role/title lines that actually appear in the resume."""
+        found: list[str] = []
+        seen: set[str] = set()
+        for raw_line in str(text or "").splitlines():
+            line = re.sub(r"^[\s•\-*|]+", "", raw_line).strip()
+            line = re.sub(r"\s+", " ", line)
+            if not line or len(line) > 90 or len(line.split()) > 8:
+                continue
+            if self.ROLE_SENTENCE_STARTS.search(line) or not self.ROLE_TOKENS.search(line):
+                continue
+            if sum(char in line for char in ".;:") > 1:
+                continue
+            key = line.casefold()
+            if key not in seen:
+                seen.add(key)
+                found.append(line)
+        return found[:12]
+
     def parse(self, resume_path: str | Path) -> dict:
-        """Parse a resume into normalized text and detected skills."""
+        """Parse a resume into normalized text, detected skills, and role signals."""
         path = Path(resume_path)
         text = self.extract_text(path)
         return {
@@ -101,6 +131,7 @@ class ResumeParser:
             "format": path.suffix.lower().lstrip("."),
             "text": text,
             "skills": self.extract_skills(text),
+            "roles": self.extract_roles(text),
         }
 
     @staticmethod

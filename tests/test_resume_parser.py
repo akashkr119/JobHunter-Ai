@@ -37,10 +37,21 @@ def test_extract_skills_detects_automotive_skills():
     assert {"automotive", "can", "canoe", "capl", "uds"}.issubset(skills)
 
 
+def test_extract_roles_only_returns_role_lines():
+    roles = ResumeParser().extract_roles(
+        "QA Automation Engineer | SDET\n"
+        "Experienced QA Automation Engineer with six years of experience.\n"
+        "Senior QA Automation Engineer\n"
+        "System Validation Engineer\n"
+        "Python Selenium"
+    )
+    assert roles == ["QA Automation Engineer | SDET", "Senior QA Automation Engineer", "System Validation Engineer"]
+
+
 def test_parse_returns_structured_resume(tmp_path):
     resume = tmp_path / "resume.txt"
     resume.write_text(
-        "QA Automation Engineer with Python, Selenium, Pytest and Jenkins.",
+        "QA Automation Engineer\nSystem Validation Engineer\nPython, Selenium, Pytest and Jenkins.",
         encoding="utf-8",
     )
     result = ResumeParser().parse(resume)
@@ -48,6 +59,7 @@ def test_parse_returns_structured_resume(tmp_path):
     assert result["format"] == "txt"
     assert "QA Automation Engineer" in result["text"]
     assert {"python", "selenium", "pytest", "jenkins"}.issubset(result["skills"])
+    assert result["roles"] == ["QA Automation Engineer", "System Validation Engineer"]
 
 
 def test_missing_resume_raises_file_not_found(tmp_path):
@@ -93,7 +105,7 @@ def test_pdf_resume_parsing(tmp_path):
     resume.write_bytes(b"placeholder")
 
     page = MagicMock()
-    page.extract_text.return_value = "Python Selenium Pytest Docker"
+    page.extract_text.return_value = "QA Automation Engineer\nPython Selenium Pytest Docker"
     reader = MagicMock()
     reader.pages = [page]
 
@@ -103,6 +115,7 @@ def test_pdf_resume_parsing(tmp_path):
     pdf_reader.assert_called_once_with(str(resume))
     assert result["format"] == "pdf"
     assert {"python", "selenium", "pytest", "docker"}.issubset(result["skills"])
+    assert result["roles"] == ["QA Automation Engineer"]
 
 
 def test_text_cleanup_removes_blank_lines_and_extra_spaces(tmp_path):
