@@ -83,6 +83,14 @@ def dashboard_state() -> dict:
     settings = dashboard_settings()
     saved = load_config()
     resume = Path(settings.resume_path).expanduser()
+    if resume.is_file() and "resume_roles" not in saved:
+        try:
+            from matcher.resume_parser import ResumeParser
+            saved["resume_roles"] = ResumeParser().parse(resume).get("roles", [])
+            saved["target_titles"] = list(saved["resume_roles"])
+            save_config(saved)
+        except (OSError, ValueError, RuntimeError):
+            saved["resume_roles"] = []
     return {
         "resume": {
             "configured": resume.is_file(),
