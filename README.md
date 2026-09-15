@@ -257,6 +257,27 @@ ATS adapters validate the supported HTTPS host family and delegate to a caller-p
 
 **Until this foundation is implemented and validated, the existing single-user SQLite/VM configuration should not be represented as the final architecture for a 30+ user service.**
 
+## Milestone 14 roadmap
+
+| Stage | Scope | Status |
+| --- | --- | --- |
+| 14.1 | Resume skill-gap analysis | ✅ Complete |
+| 14.2 | Conservative resume improvement recommendations | ✅ Complete |
+| 14.3 | Safe application preparation | ✅ Complete |
+| 14.4 | Resume review alerts and decision | ✅ Complete |
+| 14.5 | Application approval notifications | ✅ Complete |
+| 14.6 | Explicit application authorization | ✅ Complete |
+| 14.7 | Submission-authorization gate | ✅ Complete |
+| 14.8 | Safe submission executor foundation | ✅ Complete |
+| 14.9 | Persistent duplicate prevention / submission state | ✅ Complete |
+| 14.10 | Missing-information and failure/retry handling | ✅ Complete |
+| 14.11 | Supported ATS submission adapters | ✅ Complete |
+| 14.12 | End-to-end submission validation | ✅ Complete |
+
+### Current position: V1 release validation
+
+Milestone 14.12 validates the complete safe submission path across all four supported ATS adapter boundaries. Integration coverage verifies that explicit approval and complete information are required, unsupported or blocked flows never reach the transport, successful submissions are persisted, and duplicate submissions are rejected.
+
 ## Development and release gate
 
 Run the full automated suite with:
@@ -266,5 +287,18 @@ pytest
 ```
 
 The release gate requires green CI plus the production smoke checklist. Automatic application submission must not be marked complete until authorization, durable duplicate prevention, missing-information handling, notification delivery, supported-flow behavior, and safe failure paths have dedicated automated coverage.
+
+### V1 release milestones
+
+| # | Milestone | Status |
+| --- | --- | --- |
+| 1 | Job Discovery & Matching | ✅ Complete |
+| 2 | Recommendation & Tracking | ✅ Complete |
+| 3 | Notifications & Dashboard | ✅ Complete |
+| 4 | Production Readiness | ✅ Complete |
+| 5 | Automated Production Runner | ✅ Complete |
+| 6 | V1 Hardening & Release | 🧪 Release validation |
+
+After both pass, the repository can be tagged `v1.0.0`.
 
 See `docs/PRODUCTION.md` for configuration and operations. See `docs/RELEASE_CHECKLIST.md` for the final release gate. See `CHANGELOG.md` for release notes.
