@@ -5,8 +5,9 @@ from flask import Flask, jsonify, render_template, request
 from database.db import Database
 from matcher.recommendation_ranker import RecommendationRanker
 from crawler.source_health import evaluate_source_health
-from main import run_once
+from dashboard.resume_first_discovery import run_discovery
 from dashboard.user_config import dashboard_settings, dashboard_state, store_resume, update_preferences
+from dashboard.auto_discovery import start as start_auto_discovery
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024 + 1024 * 1024
@@ -100,7 +101,7 @@ def upload_resume():
         result = store_resume(request.files.get("resume"))
     except (ValueError, RuntimeError, OSError) as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"message": "Resume uploaded and activated", "resume": result}), 201
+    return jsonify({"message": "Resume uploaded and activated", "resume": result, "setup": dashboard_state()}), 201
 
 
 @app.patch("/api/preferences")
@@ -113,28 +114,36 @@ def preferences():
 
 @app.post("/api/discovery")
 def discovery():
-    payload = request.get_json(silent=True) or {}
     try:
-        if "career_urls" in payload:
-            state = update_preferences({"career_urls": payload.get("career_urls")})
-        else:
-            state = dashboard_state()
-        preference_fields = ("min_match_score", "target_titles", "preferred_locations", "work_modes", "desired_keywords", "excluded_keywords")
-        supplied_preferences = {k: payload[k] for k in preference_fields if k in payload}
-        if supplied_preferences:
-            if "career_urls" in payload:
-                supplied_preferences["career_urls"] = payload["career_urls"]
-            state = update_preferences(supplied_preferences)
+        state = dashboard_state()
         settings = dashboard_settings()
-        urls = tuple(state.get("career_urls") or [])
-        if not urls:
-            return jsonify({"error": "At least one career URL is required", "setup": state}), 400
         if not Path(settings.resume_path).is_file():
             return jsonify({"error": "Upload a resume before starting discovery", "setup": state}), 400
-        summary = run_once(list(urls), settings)
+        if not settings.preferred_locations:
+            return jsonify({"error": "Select at least one preferred location before starting discovery", "setup": state}), 400
+        if not settings.target_titles:
+            return jsonify({"error": "No target roles were detected. Upload a resume with job-title information or add a target role", "setup": state}), 400
+        summary = run_discovery(settings)
         return jsonify({"summary": summary, "setup": dashboard_state()})
     except (ValueError, OSError, RuntimeError) as exc:
         return jsonify({"error": str(exc), "setup": dashboard_state()}), 400
+
+
+@app.get("/api/automatic-search")
+def automatic_search():
+    state = dashboard_state()
+    saved = __import__("dashboard.user_config", fromlist=["load_config"]).load_config()
+    return jsonify({"enabled": bool(saved.get("automatic_search_enabled", True)), "interval_hours": 24, "last_run": saved.get("automatic_search_last_run")})
+
+
+@app.patch("/api/automatic-search")
+def set_automatic_search():
+    payload = request.get_json(silent=True) or {}
+    try:
+        state = update_preferences({"automatic_search_enabled": payload.get("enabled")})
+    except (ValueError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(state)
 
 
 @app.get("/api/source-health")
@@ -250,5 +259,9 @@ def update_job_tracking(job_id):
     return jsonify(_job_summary(_rank(job)))
 
 
+# The production VM uses one Gunicorn worker. Start the 24-hour dashboard
+# scheduler once when that worker imports this module.
+start_auto_discovery()
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=False)
