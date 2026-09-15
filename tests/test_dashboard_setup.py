@@ -32,8 +32,8 @@ def test_preferences_are_persisted_without_career_urls(tmp_path, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert "career_urls" not in payload
-    assert payload["preferences"]["target_titles"] == ["system validation engineer", "sdet"]
-    assert payload["preferences"]["preferred_locations"] == ["mumbai", "pune"]
+    assert payload["preferences"]["target_titles"] == ["System Validation Engineer", "SDET"]
+    assert payload["preferences"]["preferred_locations"] == ["Mumbai", "Pune"]
     assert payload["preferences"]["min_match_score"] == 70.0
     assert payload["preferences"]["automatic_search_enabled"] is True
 

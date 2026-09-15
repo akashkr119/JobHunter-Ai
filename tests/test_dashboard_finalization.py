@@ -58,6 +58,6 @@ def test_dashboard_explains_ranking_without_hiding_primary_actions():
 
 def test_dashboard_reorders_after_recommendation_affecting_updates():
     html=homepage()
-    assert 'const sortRender=' in html
+    assert 'function sortRender()' in html
     assert 'b.recommendation_score' in html
     assert 'sortRender();loadAnalytics()' in html
