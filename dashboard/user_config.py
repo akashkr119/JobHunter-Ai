@@ -136,14 +136,40 @@ def update_preferences(payload: dict) -> dict:
     return dashboard_state()
 
 
+def _resume_suffix(file_storage, original_name: str, initial_bytes: bytes) -> str:
+    """Resolve a resume format when mobile browsers omit the filename extension."""
+    suffix = Path(original_name).suffix.lower()
+    if suffix in SUPPORTED_RESUME_FORMATS:
+        return suffix
+    if suffix:
+        raise ValueError("Unsupported resume format. Use PDF, DOCX, TXT or MD")
+
+    mimetype = str(getattr(file_storage, "mimetype", "") or "").lower().split(";", 1)[0].strip()
+    mime_formats = {
+        "application/pdf": ".pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+        "text/plain": ".txt",
+        "text/markdown": ".md",
+    }
+    if mimetype in mime_formats:
+        return mime_formats[mimetype]
+    if initial_bytes.startswith(b"%PDF-"):
+        return ".pdf"
+    if initial_bytes.startswith(b"PK\x03\x04") and b"[Content_Types].xml" in initial_bytes:
+        return ".docx"
+    raise ValueError("Unsupported resume format. Use PDF, DOCX, TXT or MD")
+
+
 def store_resume(file_storage) -> dict:
     """Validate, parse, and atomically activate a browser-uploaded resume."""
     if file_storage is None or not getattr(file_storage, "filename", ""):
         raise ValueError("A resume file is required")
     original_name = Path(str(file_storage.filename)).name
-    suffix = Path(original_name).suffix.lower()
-    if suffix not in SUPPORTED_RESUME_FORMATS:
-        raise ValueError("Unsupported resume format. Use PDF, DOCX, TXT or MD")
+    stream = getattr(file_storage, "stream", file_storage)
+    initial_bytes = stream.read(4096)
+    if hasattr(stream, "seek"):
+        stream.seek(0)
+    suffix = _resume_suffix(file_storage, original_name, initial_bytes)
 
     from matcher.resume_parser import ResumeParser
 
@@ -154,7 +180,9 @@ def store_resume(file_storage) -> dict:
     try:
         total = 0
         with os.fdopen(fd, "wb") as handle:
-            stream = getattr(file_storage, "stream", file_storage)
+            if initial_bytes:
+                handle.write(initial_bytes)
+                total = len(initial_bytes)
             while True:
                 chunk = stream.read(1024 * 1024)
                 if not chunk:
