@@ -7,7 +7,7 @@ from matcher.resume_parser import ResumeParser
 
 
 class SkillMatcher:
-    """Score resume skills against job requirements and rank job matches."""
+    """Score resume skills against job requirements and reject weak matches."""
 
     REQUIRED_MARKERS = (
         "required", "requirements", "must have", "must-have", "mandatory",
@@ -17,6 +17,17 @@ class SkillMatcher:
         "preferred", "nice to have", "nice-to-have", "bonus", "desired",
         "good to have", "preferred qualifications",
     )
+    ROLE_SIGNAL_PATTERNS = (
+        r"\bqa\b", r"quality assurance", r"test(?:ing|er)?", r"automation",
+        r"sdet", r"software quality", r"validation", r"verification",
+    )
+    ROLE_SIGNAL_SKILLS = {
+        "selenium", "pytest", "playwright", "robot framework", "appium",
+        "automation testing", "manual testing", "integration testing",
+        "system testing", "regression testing", "software testing",
+        "api testing", "wireshark", "embedded testing", "vehicle testing",
+        "system validation", "system verification",
+    }
 
     def __init__(self, skill_catalog: Iterable[str] | None = None) -> None:
         self.skill_catalog = tuple(skill_catalog or ResumeParser.DEFAULT_SKILLS)
@@ -56,15 +67,22 @@ class SkillMatcher:
         matched = sorted(resume & job)
         missing = sorted(job - resume)
         extra = sorted(resume - job)
+        score = self._weighted_score(resume, required, preferred, general)
+        missing_required = sorted(required - resume)
+        relevant = self._is_relevant_match(resume, required, preferred, general, matched)
+        if missing_required:
+            score = min(score, 59.0)
         return {
-            "score": self._weighted_score(resume, required, preferred, general),
+            "score": score,
+            "match_confidence": "high" if relevant and score >= 75 else "medium" if relevant else "low",
+            "is_relevant": relevant,
             "matched_skills": matched,
             "missing_skills": missing,
             "resume_only_skills": extra,
             "required_skills": sorted(required),
             "preferred_skills": sorted(preferred),
             "general_skills": sorted(general),
-            "missing_required_skills": sorted(required - resume),
+            "missing_required_skills": missing_required,
             "matched_required_skills": sorted(required & resume),
             "resume_skill_count": len(resume),
             "job_skill_count": len(job),
@@ -77,13 +95,22 @@ class SkillMatcher:
             return 0.0
         if not required and not preferred:
             return round(len(resume & general) / len(general) * 100, 2)
-        weights = {"required": 3.0, "general": 2.0, "preferred": 1.0}
         total = len(required) * 3.0 + len(general) * 2.0 + len(preferred)
         earned = len(resume & required) * 3.0 + len(resume & general) * 2.0 + len(resume & preferred)
         return round(earned / total * 100, 2) if total else 0.0
 
+    @staticmethod
+    def _is_relevant_match(resume, required, preferred, general, matched) -> bool:
+        if not matched:
+            return False
+        if required & resume:
+            return True
+        if len(matched) >= 2:
+            return True
+        return False
+
     def match_job(self, resume_skills: Iterable[str], job) -> dict:
-        """Match against title plus description so title-only listings are not forced to score zero."""
+        """Match against title plus description and use role context as a secondary relevance signal."""
         if isinstance(job, dict):
             description = job.get("description", "")
             title = job.get("title", "")
@@ -96,6 +123,13 @@ class SkillMatcher:
             apply_url = getattr(job, "apply_url", "")
         combined = " ".join(part for part in (str(title or "").strip(), str(description or "").strip()) if part)
         result = self.match(resume_skills, job_description=combined)
+        resume = self._normalize_skills(resume_skills)
+        title_text = str(title or "").lower()
+        role_signal = bool(re.search("|".join(self.ROLE_SIGNAL_PATTERNS), title_text))
+        if not result["is_relevant"] and role_signal and resume & self.ROLE_SIGNAL_SKILLS:
+            result["is_relevant"] = True
+            result["match_confidence"] = "medium" if result["score"] < 75 else "high"
+            result["relevance_reason"] = "role title aligns with testing/automation experience"
         result.update({"title": title, "company": company, "apply_url": apply_url})
         return result
 
