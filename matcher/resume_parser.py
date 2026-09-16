@@ -16,7 +16,7 @@ class ResumeParser:
         "automation testing", "manual testing", "integration testing",
         "system testing", "regression testing", "software testing", "wireshark",
         "ethernet", "tcp/ip", "udp", "linux", "bash", "powershell", "agile",
-        "scrum", "ci/cd", "can bus", "canoe", "canalyzer", "capl", "uds",
+        "scrum", "ci/cd", "can", "can bus", "canoe", "canalyzer", "capl", "uds",
         "autosar", "dlt", "automotive", "embedded systems", "embedded testing",
         "vehicle testing", "system validation", "system verification",
         "requirements testing", "v-model", "soap api", "graphql", "microservices",
@@ -101,6 +101,15 @@ class ResumeParser:
             normalized_skill = self._normalize(str(skill))
             if not normalized_skill:
                 continue
+            # "can" is ordinary English unless it appears in an explicit
+            # automotive/CAN-bus context. Other skills use normal boundaries.
+            if normalized_skill == "can":
+                can_context = re.search(
+                    r"(?i)(?:(?<![A-Za-z])CAN(?![A-Za-z]).{0,40}\b(?:bus|protocol|communication|network|messages?|signals?|canoe|canalyzer|capl|uds)\b|\b(?:bus|protocol|communication|network|messages?|signals?|canoe|canalyzer|capl|uds)\b.{0,40}(?<![A-Za-z])CAN(?![A-Za-z]))",
+                    original,
+                )
+                if not can_context:
+                    continue
             aliases = {normalized_skill}
             aliases.update(alias for alias, canonical in self.SKILL_ALIASES.items() if canonical == normalized_skill)
             if any(self._contains_skill(normalized_text, alias) for alias in aliases):
@@ -108,12 +117,14 @@ class ResumeParser:
                 if canonical not in found:
                     found.append(canonical)
 
-        # A bare lowercase "can" is ordinary English. Only recognize CAN as a
-        # technology when the resume explicitly uses it with a CAN-bus context.
-        if re.search(r"(?<![A-Za-z])CAN(?![A-Za-z])", original) and re.search(
-            r"(?i)\bCAN\s+(?:bus|protocol|communication|network|messages?|signals?)\b", original,
-        ) and "can bus" not in found:
-            found.append("can bus")
+        # A standalone CAN mention is not enough. Explicit CAN-bus wording or
+        # nearby CAN tooling (CANoe/CANalyzer/CAPL/UDS) establishes the protocol.
+        if "can" not in found and re.search(r"(?<![A-Za-z])CAN(?![A-Za-z])", original):
+            if re.search(
+                r"(?i)(?:\bCAN\s+(?:bus|protocol|communication|network|messages?|signals?)\b|\b(?:CANoe|CANalyzer|CAPL|UDS)\b.{0,40}\bCAN\b|\bCAN\b.{0,40}\b(?:CANoe|CANalyzer|CAPL|UDS)\b)",
+                original,
+            ):
+                found.append("can")
         return found
 
     @staticmethod
