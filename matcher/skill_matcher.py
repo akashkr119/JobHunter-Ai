@@ -17,6 +17,17 @@ class SkillMatcher:
         "preferred", "nice to have", "nice-to-have", "bonus", "desired",
         "good to have", "preferred qualifications",
     )
+    ROLE_SIGNAL_PATTERNS = (
+        r"\bqa\b", r"quality assurance", r"test(?:ing|er)?", r"automation",
+        r"sdet", r"software quality", r"validation", r"verification",
+    )
+    ROLE_SIGNAL_SKILLS = {
+        "selenium", "pytest", "playwright", "robot framework", "appium",
+        "automation testing", "manual testing", "integration testing",
+        "system testing", "regression testing", "software testing",
+        "api testing", "wireshark", "embedded testing", "vehicle testing",
+        "system validation", "system verification",
+    }
 
     def __init__(self, skill_catalog: Iterable[str] | None = None) -> None:
         self.skill_catalog = tuple(skill_catalog or ResumeParser.DEFAULT_SKILLS)
@@ -58,9 +69,6 @@ class SkillMatcher:
         extra = sorted(resume - job)
         score = self._weighted_score(resume, required, preferred, general)
         missing_required = sorted(required - resume)
-        # A job with only one incidental skill must not become a 100% match.
-        # Likewise, a missing mandatory skill makes a candidate unsuitable even
-        # when the description contains many secondary technologies.
         relevant = self._is_relevant_match(resume, required, preferred, general, matched)
         if missing_required:
             score = min(score, 59.0)
@@ -87,7 +95,6 @@ class SkillMatcher:
             return 0.0
         if not required and not preferred:
             return round(len(resume & general) / len(general) * 100, 2)
-        weights = {"required": 3.0, "general": 2.0, "preferred": 1.0}
         total = len(required) * 3.0 + len(general) * 2.0 + len(preferred)
         earned = len(resume & required) * 3.0 + len(resume & general) * 2.0 + len(resume & preferred)
         return round(earned / total * 100, 2) if total else 0.0
@@ -98,16 +105,12 @@ class SkillMatcher:
             return False
         if required & resume:
             return True
-        # With no explicit required section, require at least two independent
-        # matched skills. This prevents one common technology from qualifying an
-        # unrelated role.
         if len(matched) >= 2:
             return True
-        # A single preferred skill is not enough to establish relevance.
         return False
 
     def match_job(self, resume_skills: Iterable[str], job) -> dict:
-        """Match against title plus description."""
+        """Match against title plus description and use role context as a secondary relevance signal."""
         if isinstance(job, dict):
             description = job.get("description", "")
             title = job.get("title", "")
@@ -120,6 +123,13 @@ class SkillMatcher:
             apply_url = getattr(job, "apply_url", "")
         combined = " ".join(part for part in (str(title or "").strip(), str(description or "").strip()) if part)
         result = self.match(resume_skills, job_description=combined)
+        resume = self._normalize_skills(resume_skills)
+        title_text = str(title or "").lower()
+        role_signal = bool(re.search("|".join(self.ROLE_SIGNAL_PATTERNS), title_text))
+        if not result["is_relevant"] and role_signal and resume & self.ROLE_SIGNAL_SKILLS:
+            result["is_relevant"] = True
+            result["match_confidence"] = "medium" if result["score"] < 75 else "high"
+            result["relevance_reason"] = "role title aligns with testing/automation experience"
         result.update({"title": title, "company": company, "apply_url": apply_url})
         return result
 
