@@ -7,7 +7,7 @@ from matcher.resume_parser import ResumeParser
 
 
 class SkillMatcher:
-    """Score resume skills against job requirements and rank job matches."""
+    """Score resume skills against job requirements and reject weak matches."""
 
     REQUIRED_MARKERS = (
         "required", "requirements", "must have", "must-have", "mandatory",
@@ -56,15 +56,25 @@ class SkillMatcher:
         matched = sorted(resume & job)
         missing = sorted(job - resume)
         extra = sorted(resume - job)
+        score = self._weighted_score(resume, required, preferred, general)
+        missing_required = sorted(required - resume)
+        # A job with only one incidental skill must not become a 100% match.
+        # Likewise, a missing mandatory skill makes a candidate unsuitable even
+        # when the description contains many secondary technologies.
+        relevant = self._is_relevant_match(resume, required, preferred, general, matched)
+        if missing_required:
+            score = min(score, 59.0)
         return {
-            "score": self._weighted_score(resume, required, preferred, general),
+            "score": score,
+            "match_confidence": "high" if relevant and score >= 75 else "medium" if relevant else "low",
+            "is_relevant": relevant,
             "matched_skills": matched,
             "missing_skills": missing,
             "resume_only_skills": extra,
             "required_skills": sorted(required),
             "preferred_skills": sorted(preferred),
             "general_skills": sorted(general),
-            "missing_required_skills": sorted(required - resume),
+            "missing_required_skills": missing_required,
             "matched_required_skills": sorted(required & resume),
             "resume_skill_count": len(resume),
             "job_skill_count": len(job),
@@ -82,8 +92,22 @@ class SkillMatcher:
         earned = len(resume & required) * 3.0 + len(resume & general) * 2.0 + len(resume & preferred)
         return round(earned / total * 100, 2) if total else 0.0
 
+    @staticmethod
+    def _is_relevant_match(resume, required, preferred, general, matched) -> bool:
+        if not matched:
+            return False
+        if required & resume:
+            return True
+        # With no explicit required section, require at least two independent
+        # matched skills. This prevents one common technology from qualifying an
+        # unrelated role.
+        if len(matched) >= 2:
+            return True
+        # A single preferred skill is not enough to establish relevance.
+        return False
+
     def match_job(self, resume_skills: Iterable[str], job) -> dict:
-        """Match against title plus description so title-only listings are not forced to score zero."""
+        """Match against title plus description."""
         if isinstance(job, dict):
             description = job.get("description", "")
             title = job.get("title", "")
