@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
+import os
 from typing import Callable, Iterable, Protocol
 
 from crawler.job_scraper import Job
@@ -33,11 +35,29 @@ class SourceRun:
 
 
 class JobSourceManager:
-    """Register, select, retry and run job sources behind one stable API."""
+    """Register, select, retry and run job sources behind one stable API.
 
-    def __init__(self, sources: Iterable[JobSource] | None = None, *, retry_attempts: int = 1, tracker: SourceReliabilityTracker | None = None, config: SourceConfig | None = None) -> None:
+    Sources are network-bound, so discovery runs them concurrently. A slow or
+    blocked provider is bounded by a per-discovery timeout and is reported as a
+    failed source instead of delaying successful providers.
+    """
+
+    DEFAULT_SOURCE_TIMEOUT_SECONDS = 30.0
+
+    def __init__(
+        self,
+        sources: Iterable[JobSource] | None = None,
+        *,
+        retry_attempts: int = 1,
+        tracker: SourceReliabilityTracker | None = None,
+        config: SourceConfig | None = None,
+        source_timeout_seconds: float | None = None,
+        max_workers: int | None = None,
+    ) -> None:
         self.config = config or SourceConfig(retry_attempts=retry_attempts)
         self.retry_attempts = self.config.retry_attempts
+        self.source_timeout_seconds = self._read_timeout(source_timeout_seconds)
+        self.max_workers = self._read_max_workers(max_workers)
         self._sources: dict[str, JobSource] = {}
         self.tracker = tracker or SourceReliabilityTracker()
         for source in sources or ():
@@ -50,6 +70,32 @@ class JobSourceManager:
             if source is not None:
                 manager.register(source)
         return manager
+
+    @staticmethod
+    def _read_timeout(value: float | None) -> float:
+        raw = os.getenv("JOBHUNTER_SOURCE_TIMEOUT_SECONDS", "").strip() if value is None else str(value)
+        if not raw:
+            return JobSourceManager.DEFAULT_SOURCE_TIMEOUT_SECONDS
+        try:
+            timeout = float(raw)
+        except ValueError as exc:
+            raise ValueError("JOBHUNTER_SOURCE_TIMEOUT_SECONDS must be numeric") from exc
+        if timeout <= 0:
+            raise ValueError("JOBHUNTER_SOURCE_TIMEOUT_SECONDS must be greater than 0")
+        return timeout
+
+    @staticmethod
+    def _read_max_workers(value: int | None) -> int | None:
+        raw = os.getenv("JOBHUNTER_SOURCE_MAX_WORKERS", "").strip() if value is None else str(value)
+        if not raw:
+            return None
+        try:
+            workers = int(raw)
+        except ValueError as exc:
+            raise ValueError("JOBHUNTER_SOURCE_MAX_WORKERS must be an integer") from exc
+        if workers < 1:
+            raise ValueError("JOBHUNTER_SOURCE_MAX_WORKERS must be at least 1")
+        return workers
 
     def register(self, source: JobSource) -> None:
         name = str(getattr(source, "name", "")).strip().lower()
@@ -80,20 +126,58 @@ class JobSourceManager:
         jobs = [job for result in self.search_with_results(query, sources=sources, **kwargs) for job in result.jobs]
         return self.deduplicate(jobs)
 
+    def _run_source(self, name: str, query: str, kwargs: dict) -> tuple[tuple[Job, ...], str | None]:
+        source = self.get(name)
+        try:
+            jobs = tuple(retry_call(lambda: source.search(query, **kwargs) or (), attempts=self.retry_attempts))
+            return jobs, None
+        except Exception as exc:  # noqa: BLE001 - source isolation is intentional
+            return (), f"{type(exc).__name__}: {exc}"
+
     def search_with_results(self, query: str = "", sources: Iterable[str] | None = None, **kwargs) -> list[SourceRun]:
         selected = self.selected_names() if sources is None else tuple(str(name).strip().lower() for name in sources)
-        results: list[SourceRun] = []
+        if not selected:
+            return []
+
         for name in selected:
-            source = self.get(name)
+            self.get(name)
             self.tracker.start(name)
+
+        workers = self.max_workers or len(selected)
+        workers = max(1, min(workers, len(selected)))
+        executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="jobhunter-source")
+        futures = {
+            executor.submit(self._run_source, name, query, dict(kwargs)): name
+            for name in selected
+        }
+        done, not_done = wait(tuple(futures), timeout=self.source_timeout_seconds)
+
+        results: dict[str, SourceRun] = {}
+        for future in done:
+            name = futures[future]
             try:
-                jobs = tuple(retry_call(lambda: source.search(query, **kwargs) or (), attempts=self.retry_attempts))
+                jobs, error = future.result()
+            except Exception as exc:  # noqa: BLE001 - final source isolation guard
+                jobs, error = (), f"{type(exc).__name__}: {exc}"
+            if error:
+                self.tracker.failure(name, error)
+                results[name] = SourceRun(name, (), error)
+            else:
                 self.tracker.success(name, len(jobs))
-                results.append(SourceRun(name, jobs))
-            except Exception as exc:  # noqa: BLE001 - source isolation is intentional
-                self.tracker.failure(name, str(exc))
-                results.append(SourceRun(name, (), f"{type(exc).__name__}: {exc}"))
-        return results
+                results[name] = SourceRun(name, jobs)
+
+        for future in not_done:
+            name = futures[future]
+            error = f"TimeoutError: source exceeded {self.source_timeout_seconds:.1f}s timeout"
+            self.tracker.failure(name, error)
+            results[name] = SourceRun(name, (), error)
+            future.cancel()
+
+        # Do not wait for a blocked provider after the useful results are ready.
+        # The running provider thread may finish later, but it can no longer hold
+        # up the dashboard request or discard results from other providers.
+        executor.shutdown(wait=False, cancel_futures=True)
+        return [results[name] for name in selected]
 
     def health(self, sources: Iterable[str] | None = None) -> tuple[SourceHealth, ...]:
         return tuple(result.health() for result in self.search_with_results(sources=sources))
